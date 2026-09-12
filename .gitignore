@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.env
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+.moonanbot/
+release/
+*.tgz
+*.tar.gz
+test-results/private/
