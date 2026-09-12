@@ -77,7 +77,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
   });
 
-  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.1" }));
+  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.2" }));
   server.post("/api/v1/auth/login", async (request, reply) => {
     const address = request.ip;
     const state = failures.get(address);

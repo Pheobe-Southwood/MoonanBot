@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="v0.0.1-rc.1"
+RELEASE_VERSION="v0.0.1-rc.2"
 ASSET=""
 UNINSTALL=0
 PURGE=0
@@ -13,7 +13,7 @@ SERVICE_FILE="/etc/systemd/system/moonanbot.service"
 
 while (($#)); do
   case "$1" in
-    --version) VERSION="${2:?missing version}"; shift 2 ;;
+    --version) RELEASE_VERSION="${2:?missing version}"; shift 2 ;;
     --asset) ASSET="${2:?missing asset path}"; shift 2 ;;
     --uninstall) UNINSTALL=1; shift ;;
     --purge) PURGE=1; shift ;;
@@ -22,7 +22,7 @@ while (($#)); do
 done
 
 if [[ $EUID -ne 0 ]]; then echo "MoonanBot installer must run as root." >&2; exit 1; fi
-if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$ ]]; then echo "Invalid version: $VERSION" >&2; exit 2; fi
+if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$ ]]; then echo "Invalid version: $RELEASE_VERSION" >&2; exit 2; fi
 
 if ((UNINSTALL)); then
   systemctl disable --now moonanbot.service 2>/dev/null || true
@@ -75,17 +75,17 @@ TEMP_ASSET=""
 if [[ -z "$ASSET" ]]; then
   TEMP_ASSET="$(mktemp -d)"
   trap 'rm -rf "$TEMP_ASSET"' EXIT
-  ASSET="$TEMP_ASSET/MoonanBot-linux-x64-${VERSION}.tar.gz"
-  curl --fail --location --proto '=https' --tlsv1.2 "https://github.com/${REPOSITORY}/releases/download/${VERSION}/MoonanBot-linux-x64-${VERSION}.tar.gz" -o "$ASSET"
-  curl --fail --location --proto '=https' --tlsv1.2 "https://github.com/${REPOSITORY}/releases/download/${VERSION}/SHA256SUMS" -o "$TEMP_ASSET/SHA256SUMS"
-  (cd "$TEMP_ASSET" && grep " MoonanBot-linux-x64-${VERSION}.tar.gz$" SHA256SUMS | sha256sum --check --strict)
+  ASSET="$TEMP_ASSET/MoonanBot-linux-x64-${RELEASE_VERSION}.tar.gz"
+  curl --fail --location --proto '=https' --tlsv1.2 "https://github.com/${REPOSITORY}/releases/download/${RELEASE_VERSION}/MoonanBot-linux-x64-${RELEASE_VERSION}.tar.gz" -o "$ASSET"
+  curl --fail --location --proto '=https' --tlsv1.2 "https://github.com/${REPOSITORY}/releases/download/${RELEASE_VERSION}/SHA256SUMS" -o "$TEMP_ASSET/SHA256SUMS"
+  (cd "$TEMP_ASSET" && grep " MoonanBot-linux-x64-${RELEASE_VERSION}.tar.gz$" SHA256SUMS | sha256sum --check --strict)
 else
   ASSET="$(readlink -f "$ASSET")"
   [[ -f "$ASSET" ]] || { echo "Asset does not exist: $ASSET" >&2; exit 1; }
 fi
 
-RELEASE_DIR="$APP_ROOT/releases/$VERSION"
-STAGING_DIR="$APP_ROOT/releases/.${VERSION}.staging.$$"
+RELEASE_DIR="$APP_ROOT/releases/$RELEASE_VERSION"
+STAGING_DIR="$APP_ROOT/releases/.${RELEASE_VERSION}.staging.$$"
 rm -rf "$STAGING_DIR"
 install -d -m 0755 "$STAGING_DIR"
 tar -xzf "$ASSET" -C "$STAGING_DIR"
@@ -93,7 +93,7 @@ tar -xzf "$ASSET" -C "$STAGING_DIR"
 
 if [[ -f "$DATA_ROOT/moonanbot.sqlite" && -x "$APP_ROOT/runtime/bin/node" && -f "$APP_ROOT/current/dist/cli.js" ]]; then
   systemctl stop moonanbot.service 2>/dev/null || true
-  BACKUP="$DATA_ROOT/backups/pre-${VERSION}-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
+  BACKUP="$DATA_ROOT/backups/pre-${RELEASE_VERSION}-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
   runuser -u moonanbot -- env MOONANBOT_DATA_DIR="$DATA_ROOT" "$APP_ROOT/runtime/bin/node" "$APP_ROOT/current/dist/cli.js" backup "$BACKUP"
 fi
 
@@ -161,7 +161,7 @@ if ((READY == 0)); then
   exit 1
 fi
 
-echo "MoonanBot $VERSION is installed and running at http://127.0.0.1:21314"
+echo "MoonanBot $RELEASE_VERSION is installed and running at http://127.0.0.1:21314"
 echo "The character is paused until you configure and start it in the WebUI."
 if ((FIRST_INSTALL)); then
   echo "WebUI password (shown once): $GENERATED_PASSWORD"

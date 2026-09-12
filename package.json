@@ -1,6 +1,6 @@
 {
   "name": "moonanbot",
-  "version": "0.0.1-rc.1",
+  "version": "0.0.1-rc.2",
   "private": true,
   "description": "A multi-platform AI chat bot exploring lifelike presence.",
   "license": "AGPL-3.0-or-later",
