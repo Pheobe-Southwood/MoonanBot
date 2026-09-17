@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.1-rc.4 — 2026-09-17
+
+- Added outbound OneBot clients (`onebot.outbound`) so MoonanBot dials the QQ implementation instead of requiring an inbound reverse WebSocket; each entry carries a name, URL, access token, optional `self_id`, role, reconnect interval, and an enabled flag.
+- Added automatic reconnection with exponential backoff (capped at 30 s), `self_id` learning from the first event, and reconciliation on save that only reconnects entries whose configuration changed.
+- Added `onebot.acceptReverse` (default `true`) to keep reverse WebSockets working, plus settings normalisation so existing databases gain the new fields without a migration.
+- Exposed outbound status in `GET /api/v1/runtime` and added an outbound section with per-client status to the Connections page.
+
 ## 0.0.1-rc.3 — 2026-09-17
 
 - Accept `X-Client-Role` case-insensitively so OneBot implementations that send `Universal`, `Event`, or `Api` (for example SnowLuma) can attach instead of being closed with `4400`.

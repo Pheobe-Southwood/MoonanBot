@@ -4,7 +4,7 @@ MoonanBot v0.0.1 is a single-operator local service. It binds to loopback by def
 
 SQLite files are created with mode `0600`; installation directories are owned by the non-login `moonanbot` service user. API and OAuth secrets are stored in plaintext by explicit product choice. Web responses mask provider secrets and ordinary logs do not include request bodies, but root, the service account, process debuggers, or copied full database backups can read them.
 
-The OneBot token protects the reverse WebSocket. Keep the endpoint on a trusted host/network. MoonanBot does not provide TLS; use an SSH tunnel or a carefully configured reverse proxy if transport leaves localhost.
+The OneBot token protects the reverse WebSocket, and each outbound client authenticates to the implementation with its own token. Keep both on a trusted host/network. MoonanBot does not provide TLS; use `wss://` for outbound clients, or an SSH tunnel or a carefully configured reverse proxy, when transport leaves a trusted network.
 
 Outbound messages can have real social impact. Review the character and traces, use allowlists, and keep the global outbound switch disabled during evaluation. A message whose connection fails after dispatch is marked `unknown` and is not automatically resent.
 

@@ -10,7 +10,7 @@ MoonanBot 是一个可对接多平台的 AI 聊天 Bot，致力于研究“真�
 
 - `SimulationAgent` 根据人设、记忆、关系和外界事件推演单个角色的行为。
 - `SynthesisAgent` 使用暂存、统一校验和事务提交，把经历归纳为有边界的长期记忆和关系资料。
-- 初版通过平台适配层对接 OneBot v11 反向 WebSocket，后续可扩展其他平台。
+- 通过平台适配层对接 OneBot v11：既支持反向 WebSocket，也支持由 MoonanBot 主动拨出的出站连接，后续可扩展其他平台。
 - 中英双语、macOS 桌面风格 WebUI，以渐进式披露组织角色、Agents、连接、活动和设置。
 - SQLite 是唯一权威数据源；启用 WAL、外键、持久化计时器、Prompt 版本与完整原始历史。
 
@@ -21,7 +21,7 @@ MoonanBot 是一个可对接多平台的 AI 聊天 Bot，致力于研究“真�
 以 root 运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.3/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.4/scripts/install.sh | bash
 ```
 
 安装器会创建低权限 `moonanbot` 用户，将程序放在 `/opt/moonanbot`，数据放在 `/var/lib/moonanbot`，默认仅监听 `127.0.0.1:21314`，并只显示一次随机密码。服务启动后角色仍保持暂停。
@@ -56,13 +56,13 @@ moonanbot status
 
 ## OneBot
 
-让 OneBot 实现反向连接：
+两种接法二选一。让 OneBot 实现反向连接：
 
 ```text
 ws://127.0.0.1:21314/onebot/v11/ws
 ```
 
-连接需提供 `X-Self-ID`、`X-Client-Role: event|api|universal`，以及配置的 `Bearer` 或 `Token`。v0.0.1 只接受一个 OneBot 账号。详见 [OneBot 配置](docs/onebot.md)。
+连接需提供 `X-Self-ID`、`X-Client-Role: event|api|universal`，以及配置的 `Bearer` 或 `Token`。或者在「连接」页面添加出站连接，由 MoonanBot 主动拨号连接 OneBot 实现——适用于实现运行在容器里、无法访问宿主机回环的场景。v0.0.1 只接受一个 OneBot 账号。详见 [OneBot 配置](docs/onebot.md)。
 
 ## 文档
 

@@ -106,6 +106,18 @@ export interface AgentSelection {
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 }
 
+export interface OneBotOutboundClient {
+  name: string;
+  url: string;
+  accessToken: string;
+  selfId: string;
+  role: OneBotRole;
+  reconnectIntervalMs: number;
+  enabled: boolean;
+}
+
+export type OneBotRole = "event" | "api" | "universal";
+
 export interface AppSettings {
   web: { host: string; port: number; locale: "auto" | "zh-CN" | "en" };
   onebot: {
@@ -113,6 +125,8 @@ export interface AppSettings {
     apiTimeoutMs: number;
     privateAllowlist: string[];
     groupAllowlist: string[];
+    acceptReverse: boolean;
+    outbound: OneBotOutboundClient[];
   };
   simulation: {
     idleMinMinutes: number;

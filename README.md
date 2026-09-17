@@ -10,7 +10,7 @@ MoonanBot is a multi-platform AI chat bot dedicated to exploring lifelike presen
 
 - Runs a `SimulationAgent` that directs one character's actions from personality, memory, relationships, and current events.
 - Runs a transactional `SynthesisAgent` that consolidates events into bounded long-term memory and social records.
-- Connects to OneBot v11 through a reverse WebSocket today, behind a platform-neutral adapter for future integrations.
+- Connects to OneBot v11 over a reverse WebSocket or as an outbound client that dials the implementation, behind a platform-neutral adapter for future integrations.
 - Provides a bilingual macOS-inspired WebUI with progressive disclosure for configuration, traces, prompts, providers, and data maintenance.
 - Stores all authoritative state in SQLite with WAL, foreign keys, durable timers, versioned prompts, and immutable raw history.
 
@@ -21,7 +21,7 @@ MoonanBot is built on [`@earendil-works/pi-ai`](https://github.com/earendil-work
 Run as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.3/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.4/scripts/install.sh | bash
 ```
 
 The installer creates a locked-down `moonanbot` service user, installs under `/opt/moonanbot`, stores data under `/var/lib/moonanbot`, binds the WebUI to `127.0.0.1:21314`, and prints the generated password once. The service starts with the character paused.
@@ -58,13 +58,13 @@ The full SQLite backup contains plaintext provider credentials. A WebUI characte
 
 ## OneBot
 
-Configure your OneBot implementation to connect to:
+Either configure your OneBot implementation to connect to:
 
 ```text
 ws://127.0.0.1:21314/onebot/v11/ws
 ```
 
-Send `X-Self-ID`, `X-Client-Role: event|api|universal`, and the configured `Bearer` or `Token` credential. Only one OneBot account is accepted in v0.0.1. See [OneBot setup](docs/onebot.md).
+and send `X-Self-ID`, `X-Client-Role: event|api|universal`, and the configured `Bearer` or `Token` credential, or add an outbound client under Connections so MoonanBot dials the implementation instead — useful when the implementation runs in a container that cannot reach the host loopback. Only one OneBot account is accepted in v0.0.1. See [OneBot setup](docs/onebot.md).
 
 ## Documentation
 

@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import WebSocket from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 import { createApp, type MoonanApp } from "../src/http/app.js";
 
 const apps: Array<{ app: MoonanApp; directory: string }> = [];
@@ -98,6 +98,46 @@ describe("Web API", () => {
       if (socket.readyState === WebSocket.OPEN) {
         await new Promise<void>((resolve) => { socket.once("close", () => resolve()); socket.close(); });
       }
+    }
+  });
+
+  it("validates outbound OneBot settings and reports their live status", async () => {
+    const server = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    const sockets: any[] = [];
+    server.on("connection", (socket: any) => { sockets.push(socket); });
+    await new Promise<void>((resolve) => server.once("listening", () => resolve()));
+    const serverUrl = `ws://127.0.0.1:${(server.address() as { port: number }).port}/`;
+    const app = await fixture();
+    try {
+      const cookie = await login(app);
+      const settings = (await app.server.inject({ method: "GET", url: "/api/v1/settings", headers: { cookie } })).json();
+      const outbound = [{ name: "snowluma", url: serverUrl, accessToken: "snow-token", selfId: "3665494712", role: "universal", reconnectIntervalMs: 5_000, enabled: true }];
+
+      const rejected = await app.server.inject({
+        method: "PUT", url: "/api/v1/settings", headers: { cookie },
+        payload: { value: { ...settings.value, onebot: { ...settings.value.onebot, outbound: [{ ...outbound[0], url: "http://127.0.0.1:3000/" }] } }, version: settings.version },
+      });
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json().error).toMatch(/invalid_onebot_outbound_url_1/);
+
+      const saved = await app.server.inject({
+        method: "PUT", url: "/api/v1/settings", headers: { cookie },
+        payload: { value: { ...settings.value, onebot: { ...settings.value.onebot, acceptReverse: false, outbound } }, version: settings.version },
+      });
+      expect(saved.statusCode).toBe(200);
+
+      let connected = false;
+      for (let i = 0; i < 100 && !connected; i += 1) {
+        const runtime = (await app.server.inject({ method: "GET", url: "/api/v1/runtime", headers: { cookie } })).json();
+        connected = runtime.outbound[0]?.connected === true && runtime.runtime.activeSelfId === "3665494712";
+        if (!connected) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(connected).toBe(true);
+      expect(app.db.getSettings().value.onebot.acceptReverse).toBe(false);
+      expect(app.onebot.status().roles).toEqual(["universal"]);
+    } finally {
+      for (const socket of sockets) socket.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });

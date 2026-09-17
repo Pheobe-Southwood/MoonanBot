@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
   Activity, BrainCircuit, ChevronRight, CircleDot, Database, Download, Globe2, KeyRound, Languages,
-  LayoutDashboard, LogOut, MessageCircle, Moon, Pause, Play, Plus, RefreshCw, Save, Settings, Upload,
+  LayoutDashboard, LogOut, MessageCircle, Moon, Pause, Play, PlugZap, Plus, RefreshCw, Save, Settings, Upload,
   Sparkles, Trash2, Wifi, WifiOff, Zap,
 } from "lucide-react";
 import { api, session } from "./api";
@@ -182,17 +182,100 @@ function ConnectionsPage({ locale }: { locale: Locale }) {
   const [keyFor, setKeyFor] = useState<string | null>(null);
   const [key, setKey] = useState("");
   const [onebotDraft, setOnebotDraft] = useState<AnyRecord | null>(null);
+  const [outboundDraft, setOutboundDraft] = useState<AnyRecord | null>(null);
   const [oauthFlow, setOauthFlow] = useState<string | null>(null);
   const [showCustom, setShowCustom] = useState(false);
   const [custom, setCustom] = useState({ id: "", name: "", baseUrl: "", apiKey: "" });
   useEffect(() => { if (settings.data) setOnebotDraft(structuredClone(settings.data)); }, [settings.data]);
+  useEffect(() => {
+    if (!settings.data) return;
+    const value = structuredClone(settings.data);
+    value.value.onebot.outbound = value.value.onebot.outbound ?? [];
+    if (value.value.onebot.acceptReverse === undefined) value.value.onebot.acceptReverse = true;
+    setOutboundDraft(value);
+  }, [settings.data]);
   const visible = useMemo(() => providers.data?.filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(search.toLowerCase())) ?? [], [providers.data, search]);
+  const outboundEntries: AnyRecord[] = outboundDraft?.value.onebot.outbound ?? [];
+  const outboundStatus: AnyRecord[] = runtime.data?.outbound ?? [];
+  const outboundCopy = {
+    title: locale === "en" ? "Outbound connections (dial out)" : "出站连接（主动拨出）",
+    detail: locale === "en"
+      ? "MoonanBot dials the OneBot implementation, for containers that cannot reach this loopback port."
+      : "由 MoonanBot 主动连接 OneBot 实现，适用于容器无法访问本机回环端口的场景。",
+    acceptReverse: locale === "en" ? "Accept reverse connections" : "接受反向连接",
+    add: locale === "en" ? "Add" : "添加",
+    remove: locale === "en" ? "Remove" : "删除",
+    name: locale === "en" ? "Name" : "名称",
+    url: locale === "en" ? "WebSocket URL" : "WebSocket 地址",
+    token: locale === "en" ? "Access token" : "接入 Token",
+    selfId: locale === "en" ? "Self ID (optional)" : "Self ID（可留空）",
+    role: locale === "en" ? "Role" : "角色",
+    interval: locale === "en" ? "Reconnect (ms)" : "重连间隔（毫秒）",
+    enabled: locale === "en" ? "Enabled" : "启用",
+    connected: locale === "en" ? "Connected" : "已连接",
+    reconnecting: locale === "en" ? "Reconnecting" : "重连中",
+    disabled: locale === "en" ? "Disabled" : "已停用",
+    empty: locale === "en" ? "No outbound connections configured." : "尚未配置出站连接。",
+  };
+  const setOutbound = (mutate: (onebot: AnyRecord) => void) => setOutboundDraft((draft: AnyRecord | null) => {
+    if (!draft) return draft;
+    const next = structuredClone(draft);
+    mutate(next.value.onebot);
+    return next;
+  });
+  const updateOutbound = (index: number, patch: AnyRecord) => setOutbound((onebot) => {
+    onebot.outbound[index] = { ...onebot.outbound[index], ...patch };
+  });
+  const addOutbound = () => setOutbound((onebot) => {
+    const taken = new Set(onebot.outbound.map((entry: AnyRecord) => entry.name));
+    let index = onebot.outbound.length + 1;
+    while (taken.has(`onebot-${index}`)) index += 1;
+    onebot.outbound.push({ name: `onebot-${index}`, url: "ws://127.0.0.1:3001/", accessToken: "", selfId: "", role: "universal", reconnectIntervalMs: 5_000, enabled: true });
+  });
+  const removeOutbound = (index: number) => setOutbound((onebot) => { onebot.outbound.splice(index, 1); });
+  const saveOutbound = async () => {
+    if (!outboundDraft) return;
+    const saved = await api<AnyRecord>("/settings", { method: "PUT", body: JSON.stringify(outboundDraft) });
+    settings.setData(saved);
+    setOutboundDraft(structuredClone(saved));
+    await runtime.reload();
+  };
   return <>
     <PageTitle eyebrow={locale === "en" ? "INTEGRATIONS" : "集成"} title={t("connections")} detail={locale === "en" ? "Models and messages meet here." : "模型与消息平台在这里汇合。"}/>
     <Card title={t("onebot")} action={<div className="button-row"><Pill tone={runtime.data?.onebot.connected ? "good" : "neutral"}>{runtime.data?.onebot.connected ? t("online") : t("offline")}</Pill>{onebotDraft && <Button tone="primary" onClick={async () => { const saved = await api<AnyRecord>("/settings", { method: "PUT", body: JSON.stringify(onebotDraft) }); settings.setData(saved); setOnebotDraft(structuredClone(saved)); }}><Save size={14}/>{t("save")}</Button>}</div>}>
       <div className="connection-row"><div className="connection-icon"><MessageCircle/></div><div><strong>ws://127.0.0.1:21314/onebot/v11/ws</strong><small>X-Self-ID · X-Client-Role · Bearer Token</small></div></div>
       {onebotDraft && <><Field label={locale === "en" ? "Access token" : "接入 Token"}><input type="password" value={onebotDraft.value.onebot.accessToken} onChange={(event) => setOnebotDraft({ ...onebotDraft, value: { ...onebotDraft.value, onebot: { ...onebotDraft.value.onebot, accessToken: event.target.value } } })}/></Field><div className="form-grid"><Field label={locale === "en" ? "Private allowlist (comma separated; empty = all)" : "私聊白名单（逗号分隔；空为全部）"}><input value={onebotDraft.value.onebot.privateAllowlist.join(", ")} onChange={(event) => setOnebotDraft({ ...onebotDraft, value: { ...onebotDraft.value, onebot: { ...onebotDraft.value.onebot, privateAllowlist: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) } } })}/></Field><Field label={locale === "en" ? "Group allowlist (comma separated; empty = all)" : "群聊白名单（逗号分隔；空为全部）"}><input value={onebotDraft.value.onebot.groupAllowlist.join(", ")} onChange={(event) => setOnebotDraft({ ...onebotDraft, value: { ...onebotDraft.value, onebot: { ...onebotDraft.value.onebot, groupAllowlist: event.target.value.split(",").map((value) => value.trim()).filter(Boolean) } } })}/></Field></div></>}
     </Card>
+    {outboundDraft && <Card title={outboundCopy.title} action={<div className="button-row"><Button onClick={addOutbound}><Plus size={14}/>{outboundCopy.add}</Button><Button tone="primary" onClick={saveOutbound}><Save size={14}/>{t("save")}</Button></div>}>
+      <p className="muted">{outboundCopy.detail}</p>
+      <label className="checkbox-row"><input type="checkbox" checked={Boolean(outboundDraft.value.onebot.acceptReverse)} onChange={(event) => setOutbound((onebot) => { onebot.acceptReverse = event.target.checked; })}/>{outboundCopy.acceptReverse}</label>
+      {outboundEntries.length === 0 && <p className="muted">{outboundCopy.empty}</p>}
+      {outboundEntries.map((entry: AnyRecord, index: number) => {
+        const status = outboundStatus.find((item) => item.name === entry.name);
+        const tone = status?.lastError ? "warn" : status?.connected ? "good" : "neutral";
+        const label = !entry.enabled ? outboundCopy.disabled : status?.connected ? outboundCopy.connected : outboundCopy.reconnecting;
+        return <div className="outbound-card" key={index}>
+          <div className="connection-row">
+            <div className="connection-icon"><PlugZap/></div>
+            <div><strong>{entry.name || outboundCopy.name}</strong><small>{entry.url}</small></div>
+            <Pill tone={tone as any}>{label}</Pill>
+            <Button onClick={() => removeOutbound(index)}><Trash2 size={14}/>{outboundCopy.remove}</Button>
+          </div>
+          {status?.lastError && <div className="warning">{status.lastError}</div>}
+          <div className="form-grid three">
+            <Field label={outboundCopy.name}><input value={entry.name} onChange={(event) => updateOutbound(index, { name: event.target.value })}/></Field>
+            <Field label={outboundCopy.url}><input value={entry.url} onChange={(event) => updateOutbound(index, { url: event.target.value })}/></Field>
+            <Field label={outboundCopy.token}><input type="password" value={entry.accessToken} onChange={(event) => updateOutbound(index, { accessToken: event.target.value })}/></Field>
+          </div>
+          <div className="form-grid three">
+            <Field label={outboundCopy.selfId}><input value={entry.selfId} onChange={(event) => updateOutbound(index, { selfId: event.target.value })}/></Field>
+            <Field label={outboundCopy.role}><select value={entry.role} onChange={(event) => updateOutbound(index, { role: event.target.value })}><option value="universal">universal</option><option value="event">event</option><option value="api">api</option></select></Field>
+            <Field label={outboundCopy.interval}><input type="number" min={1000} max={600000} step={500} value={entry.reconnectIntervalMs} onChange={(event) => updateOutbound(index, { reconnectIntervalMs: Number(event.target.value) })}/></Field>
+          </div>
+          <label className="checkbox-row"><input type="checkbox" checked={Boolean(entry.enabled)} onChange={(event) => updateOutbound(index, { enabled: event.target.checked })}/>{outboundCopy.enabled}</label>
+        </div>;
+      })}
+    </Card>}
     <Card title={t("providers")} action={<div className="button-row"><input className="search" placeholder="Search…" value={search} onChange={(e) => setSearch(e.target.value)}/><Button onClick={() => setShowCustom((value) => !value)}><Plus size={14}/>{t("custom")}</Button></div>}>
       {showCustom && <form className="custom-provider" onSubmit={async (event) => { event.preventDefault(); await api(`/custom-providers/${encodeURIComponent(custom.id)}`, { method: "PUT", body: JSON.stringify({ ...custom, models: [] }) }); setCustom({ id: "", name: "", baseUrl: "", apiKey: "" }); setShowCustom(false); await providers.reload(); }}><div className="form-grid three"><Field label="Provider ID"><input required pattern="[A-Za-z0-9][A-Za-z0-9_-]+" value={custom.id} onChange={(event) => setCustom({ ...custom, id: event.target.value })}/></Field><Field label={locale === "en" ? "Display name" : "显示名称"}><input required value={custom.name} onChange={(event) => setCustom({ ...custom, name: event.target.value })}/></Field><Field label="Base URL"><input required type="url" value={custom.baseUrl} onChange={(event) => setCustom({ ...custom, baseUrl: event.target.value })}/></Field></div><div className="inline-fields"><input type="password" placeholder={t("apiKey")} value={custom.apiKey} onChange={(event) => setCustom({ ...custom, apiKey: event.target.value })}/><Button tone="primary" type="submit"><Save size={14}/>{t("save")}</Button></div></form>}
       {oauthFlow && <OAuthFlow flowId={oauthFlow} locale={locale} close={() => setOauthFlow(null)}/>}

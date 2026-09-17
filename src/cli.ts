@@ -6,7 +6,7 @@ import { WebAuth } from "./http/auth.js";
 import { dataDirectory, main } from "./index.js";
 
 function usage(): never {
-  process.stderr.write(`MoonanBot v0.0.1-rc.3\n\nUsage:\n  moonanbot serve\n  moonanbot reset-password [new-password]\n  moonanbot backup <destination.sqlite>\n  moonanbot status\n`);
+  process.stderr.write(`MoonanBot v0.0.1-rc.4\n\nUsage:\n  moonanbot serve\n  moonanbot reset-password [new-password]\n  moonanbot backup <destination.sqlite>\n  moonanbot status\n`);
   process.exit(2);
 }
 

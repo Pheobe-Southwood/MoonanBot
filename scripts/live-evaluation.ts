@@ -61,13 +61,13 @@ try {
   const averages = Object.fromEntries(dimensions.map((key) => [key, Number((trials.reduce((sum, trial) => sum + trial.scores[key], 0) / trials.length).toFixed(2))]));
   const failures = trials.filter((trial) => trial.failure && trial.failure !== "无" || dimensions.some((key) => trial.scores[key] < 3));
   const report = {
-    version: "0.0.1-rc.3", generatedAt: new Date().toISOString(), provider: "deepseek", modelId,
+    version: "0.0.1-rc.4", generatedAt: new Date().toISOString(), provider: "deepseek", modelId,
     methodology: { persona, scenarios, repetitions: 3, dimensions, disclaimer: "Engineering sanity check only; not a scientific or human-reproduction conclusion. Scores are model self-assessments." },
     averages, failures, trials,
   };
   const reportDirectory = resolve("reports");
   mkdirSync(reportDirectory, { recursive: true });
-  writeFileSync(join(reportDirectory, "deepseek-evaluation-v0.0.1-rc.3.json"), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o644 });
+  writeFileSync(join(reportDirectory, "deepseek-evaluation-v0.0.1-rc.4.json"), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o644 });
   process.stdout.write(`Evaluation complete with ${modelId}. Averages: ${JSON.stringify(averages)}. Flagged: ${failures.length}/${trials.length}.\n`);
 } finally {
   db.close();

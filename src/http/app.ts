@@ -9,6 +9,7 @@ import type WebSocket from "ws";
 import { RuntimeOrchestrator } from "../agents/orchestrator.js";
 import { SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, validatePromptTemplate } from "../agents/prompts.js";
 import type { AppSettings, CharacterProfile, ContactRecord, GroupRecord, Importance } from "../domain/types.js";
+import { assertValidSettings } from "../domain/settings.js";
 import { OneBotV11Adapter } from "../platforms/onebot.js";
 import { ProviderRegistry } from "../providers/registry.js";
 import { MoonanDatabase } from "../storage/database.js";
@@ -34,16 +35,6 @@ export interface MoonanApp {
 
 function isUnsafe(method: string): boolean {
   return !["GET", "HEAD", "OPTIONS"].includes(method);
-}
-
-function validateSettings(settings: AppSettings): void {
-  if (!Number.isInteger(settings.web.port) || settings.web.port < 1 || settings.web.port > 65_535) throw new Error("invalid_port");
-  if (settings.simulation.idleMinMinutes < 1 || settings.simulation.idleMaxMinutes < settings.simulation.idleMinMinutes) throw new Error("invalid_idle_bounds");
-  if (settings.simulation.sleepMinMinutes < 1 || settings.simulation.sleepMaxMinutes < settings.simulation.sleepMinMinutes) throw new Error("invalid_sleep_bounds");
-  if (settings.simulation.priorityWakeProbability < 0 || settings.simulation.priorityWakeProbability > 1) throw new Error("invalid_wake_probability");
-  if (settings.simulation.contextModelRatio <= 0 || settings.simulation.contextModelRatio > 1) throw new Error("invalid_context_ratio");
-  if (settings.synthesis.memorySoftTokens < 1 || settings.synthesis.memoryHardTokens < settings.synthesis.memorySoftTokens) throw new Error("invalid_memory_limits");
-  if (settings.synthesis.retryCount < 0 || settings.synthesis.retryCount > 10) throw new Error("invalid_retry_count");
 }
 
 function maskSecret(value: string | null): string | null {
@@ -77,7 +68,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
   });
 
-  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.3" }));
+  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.4" }));
   server.post("/api/v1/auth/login", async (request, reply) => {
     const address = request.ip;
     const state = failures.get(address);
@@ -102,7 +93,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
   server.put("/api/v1/auth/password", async (request) => ({ password: await auth.resetPassword((request.body as any)?.password) }));
 
   server.get("/api/v1/runtime", async () => ({
-    runtime: db.getRuntime(), readiness: orchestrator.readiness(), onebot: onebot.status(), stats: db.getStats(),
+    runtime: db.getRuntime(), readiness: orchestrator.readiness(), onebot: onebot.status(), outbound: onebot.outboundStatus(), stats: db.getStats(),
     databaseBytes: existsSync(db.path) ? statSync(db.path).size : 0,
   }));
   server.post("/api/v1/runtime/start", async () => { await orchestrator.startBot(); return { runtime: db.getRuntime() }; });
@@ -153,8 +144,10 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
   server.put("/api/v1/settings", async (request, reply) => {
     try {
       const body = request.body as { value: AppSettings; version: number };
-      validateSettings(body.value);
-      return db.updateSettings(body.value, body.version);
+      assertValidSettings(body.value);
+      const saved = db.updateSettings(body.value, body.version);
+      onebot.reconcileOutbound();
+      return saved;
     } catch (error) { return reply.code(String(error).includes("conflict") ? 409 : 400).send({ error: error instanceof Error ? error.message : String(error) }); }
   });
 
@@ -300,6 +293,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
   }
 
   orchestrator.start();
+  onebot.reconcileOutbound();
   return {
     server, db, providers, onebot, orchestrator, bootstrapPassword,
     close: async () => {

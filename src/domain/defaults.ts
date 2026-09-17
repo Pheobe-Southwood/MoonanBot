@@ -14,6 +14,8 @@ export function defaultSettings(accessToken = randomSecret()): AppSettings {
       apiTimeoutMs: 30_000,
       privateAllowlist: [],
       groupAllowlist: [],
+      acceptReverse: true,
+      outbound: [],
     },
     simulation: {
       idleMinMinutes: 30,

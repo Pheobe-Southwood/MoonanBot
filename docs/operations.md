@@ -38,7 +38,7 @@ ssh -N -L 21314:127.0.0.1:21314 server
 ## Troubleshooting
 
 - Login lost: reset the password with the root CLI; all Web sessions are revoked.
-- OneBot offline: verify the reverse-WS URL, token, `X-Self-ID`, role, and localhost/network namespace.
+- OneBot offline: verify the reverse-WS URL, token, `X-Self-ID`, role, and localhost/network namespace. For outbound clients, check the URL/token under Connections and the reported last error, and confirm the implementation's WebSocket server is enabled.
 - Provider unavailable: refresh models, inspect OAuth progress, and confirm the selected model still exists.
 - Agent degraded: inspect Activity. Failed synthesis batches remain pending and retry on the next eligible run.
 - Port conflict: edit the Web settings or `/etc/moonanbot/moonanbot.env`, then restart the service.

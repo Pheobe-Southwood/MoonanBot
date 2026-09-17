@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { defaultProfile, defaultRuntime, defaultSettings } from "../domain/defaults.js";
+import { normalizeSettings } from "../domain/settings.js";
 import type {
   AgentRunSummary,
   AgentTraceMessage,
@@ -295,13 +296,13 @@ export class MoonanDatabase {
 
   getSettings(): SettingsEnvelope {
     const row = this.sqlite.prepare("SELECT value_json,version,updated_at FROM settings WHERE id=1").get() as any;
-    return { value: json<AppSettings>(row.value_json), version: Number(row.version), updatedAt: Number(row.updated_at) };
+    return { value: normalizeSettings(json<AppSettings>(row.value_json)), version: Number(row.version), updatedAt: Number(row.updated_at) };
   }
 
   updateSettings(value: AppSettings, expectedVersion: number): SettingsEnvelope {
     const timestamp = now();
     const result = this.sqlite.prepare("UPDATE settings SET value_json=?,version=version+1,updated_at=? WHERE id=1 AND version=?")
-      .run(JSON.stringify(value), timestamp, expectedVersion);
+      .run(JSON.stringify(normalizeSettings(value)), timestamp, expectedVersion);
     if (Number(result.changes) !== 1) throw new Error("settings_version_conflict");
     return this.getSettings();
   }

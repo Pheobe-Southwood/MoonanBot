@@ -58,3 +58,21 @@ _Avoid_: Relationship strength
 **Conversation Target**:
 A platform-qualified private contact or group that can own messages and become the open phone conversation.
 _Avoid_: Session
+
+## Platform connection
+
+**Platform Account**:
+The single QQ account MoonanBot observes and speaks through, identified by its `self_id`.
+_Avoid_: Bot, instance
+
+**Platform Connection**:
+The live link between MoonanBot and one OneBot v11 implementation. It is either a Reverse Connection or an Outbound Client, and both are equivalent once established.
+_Avoid_: Session, socket
+
+**Reverse Connection**:
+A Platform Connection opened by the OneBot implementation dialing MoonanBot.
+_Avoid_: Inbound socket
+
+**Outbound Client**:
+A named, configurable Platform Connection that MoonanBot dials itself, used when the OneBot implementation cannot reach MoonanBot's listener.
+_Avoid_: Relay, tunnel
