@@ -21,7 +21,7 @@ MoonanBot 是一个可对接多平台的 AI 聊天 Bot，致力于研究“真�
 以 root 运行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.2/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.3/scripts/install.sh | bash
 ```
 
 安装器会创建低权限 `moonanbot` 用户，将程序放在 `/opt/moonanbot`，数据放在 `/var/lib/moonanbot`，默认仅监听 `127.0.0.1:21314`，并只显示一次随机密码。服务启动后角色仍保持暂停。

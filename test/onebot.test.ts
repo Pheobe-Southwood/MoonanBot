@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { OneBotV11Adapter, plainText, tokenAccepted } from "../src/platforms/onebot.js";
+import { OneBotV11Adapter, normalizeRole, plainText, tokenAccepted } from "../src/platforms/onebot.js";
 import { testDatabase } from "./helpers.js";
 
 class FakeSocket extends EventEmitter {
@@ -37,6 +37,15 @@ describe("OneBot v11 adapter", () => {
     expect(tokenAccepted(undefined, "abc")).toBe(false);
   });
 
+  it("normalizes the role header case-insensitively", () => {
+    for (const role of ["universal", "Universal", "UNIVERSAL", " api ", "Event", "API"]) {
+      expect(normalizeRole(role)).toBe(role.trim().toLowerCase());
+    }
+    for (const role of ["", "   ", "guest", "universal-api", undefined]) {
+      expect(normalizeRole(role)).toBeNull();
+    }
+  });
+
   it("authenticates roles, rejects a second account, matches echo, and sends text", async () => {
     const fixture = testDatabase();
     const received: any[] = [];
@@ -46,6 +55,7 @@ describe("OneBot v11 adapter", () => {
       expect(adapter.attach(new FakeSocket() as any, { selfId: "1", role: "event", authorization: "bad" })).toMatchObject({ ok: false, code: 4403 });
       const socket = new FakeSocket();
       expect(adapter.attach(socket as any, { selfId: "1", role: "universal", authorization: `Bearer ${token}` })).toEqual({ ok: true });
+      expect(adapter.status().roles).toEqual(["universal"]);
       expect(adapter.attach(new FakeSocket() as any, { selfId: "2", role: "event", authorization: `Token ${token}` })).toMatchObject({ ok: false, code: 4409 });
       await new Promise((resolve) => setTimeout(resolve, 0));
       const result = await adapter.sendText({ platform: "onebot", kind: "private", id: "7" }, "hello");
@@ -57,6 +67,20 @@ describe("OneBot v11 adapter", () => {
       }));
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(received[0]).toMatchObject({ platformMessageId: "5", senderName: "Seven", content: "ping", target: { kind: "private", id: "7" } });
+      await adapter.close();
+    } finally { fixture.cleanup(); }
+  });
+
+  it("accepts a capitalized Universal role from OneBot implementations such as SnowLuma", async () => {
+    const fixture = testDatabase();
+    try {
+      const adapter = new OneBotV11Adapter(fixture.db, () => fixture.db.getSettings().value, async () => undefined);
+      const socket = new FakeSocket();
+      const token = fixture.db.getSettings().value.onebot.accessToken;
+      expect(adapter.attach(socket as any, { selfId: "1", role: "Universal", authorization: `Bearer ${token}` })).toEqual({ ok: true });
+      expect(adapter.status().roles).toEqual(["universal"]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await expect(adapter.sendText({ platform: "onebot", kind: "private", id: "7" }, "hello")).resolves.toMatchObject({ platformMessageId: "88" });
       await adapter.close();
     } finally { fixture.cleanup(); }
   });

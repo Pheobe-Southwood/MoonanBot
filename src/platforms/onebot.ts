@@ -6,6 +6,8 @@ import type { ChatPlatformAdapter, PlatformMessageEvent, PlatformStatus, SendRes
 
 type Role = "event" | "api" | "universal";
 
+const ROLES: readonly Role[] = ["event", "api", "universal"];
+
 interface Connection {
   socket: WebSocket;
   selfId: string;
@@ -20,8 +22,13 @@ interface PendingRequest {
 
 export interface OneBotAttach {
   selfId: string;
-  role: Role;
+  role: string;
   authorization?: string;
+}
+
+function normalizeRole(raw: string | undefined): Role | null {
+  const value = String(raw ?? "").trim().toLowerCase();
+  return (ROLES as readonly string[]).includes(value) ? value as Role : null;
 }
 
 function plainText(segments: unknown): { text: string; normalized: unknown[] } {
@@ -64,11 +71,12 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
 
   attach(socket: WebSocket, input: OneBotAttach): { ok: true } | { ok: false; code: number; reason: string } {
     if (!input.selfId) return { ok: false, code: 4400, reason: "Missing X-Self-ID" };
-    if (!["event", "api", "universal"].includes(input.role)) return { ok: false, code: 4400, reason: "Invalid X-Client-Role" };
+    const role = normalizeRole(input.role);
+    if (!role) return { ok: false, code: 4400, reason: "Invalid X-Client-Role" };
     if (!tokenAccepted(input.authorization, this.settings().onebot.accessToken)) return { ok: false, code: 4403, reason: "Invalid access token" };
     const existingSelfId = this.status().selfId;
     if (existingSelfId && existingSelfId !== input.selfId) return { ok: false, code: 4409, reason: "Only one self_id is supported" };
-    const connection: Connection = { socket, selfId: input.selfId, role: input.role };
+    const connection: Connection = { socket, selfId: input.selfId, role };
     this.connections.add(connection);
     this.db.setRuntime({ activeSelfId: input.selfId });
     socket.on("message", (data) => { void this.receive(connection, data.toString()); });
@@ -202,4 +210,4 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
   }
 }
 
-export { plainText, tokenAccepted };
+export { normalizeRole, plainText, tokenAccepted };

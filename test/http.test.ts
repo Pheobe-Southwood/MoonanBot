@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
 import { createApp, type MoonanApp } from "../src/http/app.js";
 
 const apps: Array<{ app: MoonanApp; directory: string }> = [];
@@ -75,5 +76,28 @@ describe("Web API", () => {
     const response = await app.server.inject({ method: "POST", url: "/api/v1/runtime/start", headers: { cookie } });
     expect(response.statusCode).toBe(500);
     expect(response.body).toContain("SOUL");
+  });
+
+  it("keeps a OneBot socket open when the client sends a capitalized X-Client-Role", async () => {
+    const app = await fixture();
+    const token = app.db.getSettings().value.onebot.accessToken;
+    await app.server.listen({ port: 0, host: "127.0.0.1" });
+    const address = app.server.server.address() as { port: number };
+    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/onebot/v11/ws`, {
+      headers: { "x-self-id": "3665494712", "x-client-role": "Universal", authorization: `Bearer ${token}` },
+    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", () => resolve());
+        socket.once("close", (code: number, reason: Buffer) => reject(new Error(`closed ${code} ${reason.toString()}`)));
+        socket.once("error", reject);
+      });
+      expect(app.onebot.status()).toMatchObject({ connected: true, selfId: "3665494712", roles: ["universal"] });
+      expect(app.db.getRuntime().activeSelfId).toBe("3665494712");
+    } finally {
+      if (socket.readyState === WebSocket.OPEN) {
+        await new Promise<void>((resolve) => { socket.once("close", () => resolve()); socket.close(); });
+      }
+    }
   });
 });

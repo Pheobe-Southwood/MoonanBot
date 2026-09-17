@@ -77,7 +77,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
   });
 
-  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.2" }));
+  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.3" }));
   server.post("/api/v1/auth/login", async (request, reply) => {
     const address = request.ip;
     const state = failures.get(address);
@@ -281,7 +281,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
   });
 
   server.get("/onebot/v11/ws", { websocket: true }, (socket: WebSocket, request) => {
-    const role = String(request.headers["x-client-role"] ?? "universal") as "event" | "api" | "universal";
+    const role = String(request.headers["x-client-role"] ?? "universal");
     const authorization = request.headers.authorization;
     const attached = onebot.attach(socket, {
       selfId: String(request.headers["x-self-id"] ?? ""), role,

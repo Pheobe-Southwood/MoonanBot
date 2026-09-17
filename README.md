@@ -21,7 +21,7 @@ MoonanBot is built on [`@earendil-works/pi-ai`](https://github.com/earendil-work
 Run as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.2/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Pheobe-Southwood/MoonanBot/v0.0.1-rc.3/scripts/install.sh | bash
 ```
 
 The installer creates a locked-down `moonanbot` service user, installs under `/opt/moonanbot`, stores data under `/var/lib/moonanbot`, binds the WebUI to `127.0.0.1:21314`, and prints the generated password once. The service starts with the character paused.
