@@ -1,23 +1,27 @@
-# MoonanBot v0.0.1-rc.4
+# MoonanBot v0.0.1-rc.5
 
-This release candidate adds an outbound OneBot mode so MoonanBot can dial the QQ implementation itself, which is what containerised SnowLuma deployments need.
+This release candidate fixes three defects found in daily use: bodyless WebUI requests, simulation runs that stall awake, and a group list that drifts away from QQ.
 
-Until now the only way to attach an account was a reverse WebSocket: SnowLuma connected to `ws://127.0.0.1:21314/onebot/v11/ws`, and MoonanBot bound that port on the host loopback address only. An account running inside a Docker container cannot reach the host loopback, so the container had to be bridged with an extra TCP relay. RC.4 removes that requirement. `onebot.outbound` holds a list of clients — name, WebSocket URL, access token, optional `self_id`, role, reconnect interval, and an `enabled` flag — and MoonanBot dials each enabled entry with the usual OneBot headers (`X-Client-Role`, optional `X-Self-ID`, `Authorization: Bearer …`). Events and API replies arrive over that same socket, and `self_id` is learned from the first event when the field is left empty. Dropped sockets retry with exponential backoff capped at 30 seconds, and saving the settings reconnects only the entries that actually changed.
+The WebUI attached `Content-Type: application/json` to every request, including the ones without a body. Fastify 5 rejects an empty body carrying that header, so Start, Pause, Wake, model refresh, prompt restore, logout, and every delete button failed with `400 FST_ERR_CTP_EMPTY_JSON_BODY` while saves — which do carry a body — kept working. The header is now sent only when a body exists, which repairs all of those controls at once.
 
-Reverse connections are now toggled by `onebot.acceptReverse`, which defaults to `true`, so the existing SnowLuma account keeps working exactly as before. Operators who only need the outbound path can turn it off. The settings row is normalised on read, so databases written by RC.3 gain the new fields without a migration, and `outbound: []` reproduces the previous behaviour. The Connections page gained an outbound section with per-client status (`已连接` / `重连中` / `已停用`) and the last error, and `GET /api/v1/runtime` reports the same list.
+The Simulation Agent is designed to end every run with a Terminating Action: `idle` or `sleep`, the two actions that schedule the character's next wake. The old guard only noticed runs that performed no action at all, so a run that sent messages and then simply stopped left the character `awake` with no timer — silently stalled until somebody wrote to it. The guard now checks the ending state instead of the call count: a character still awake after the loop receives a continuation correction (worded for "no action at all" versus "acted but scheduled nothing"), up to the configured retries, before the existing forced thirty-minute idle fallback engages.
 
-Upgrading from RC.3 keeps the database, WebUI password, character, providers, and the old account's configuration; reinstalling preserves `/var/lib/moonanbot` and writes a pre-upgrade backup of the SQLite database.
+Roster Sync used to only add friends and groups when a Platform Connection opened, never removing anything, so groups the character had left stayed in the social world and the WebUI group list drifted from QQ. The platform roster is now authoritative for membership: a successful sync with a non-empty group list deletes local groups the platform no longer reports (each deletion is recorded as a `roster_sync` event), an empty platform list skips pruning to protect against a misbehaving implementation, and contacts missing from the friend list keep their record but lose `isFriend`. Sync also runs every six hours while connected and on demand through `POST /api/v1/platform/sync`, surfaced as a "Sync roster / 同步名单" button on the Groups tab.
+
+Upgrading from RC.4 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database.
 
 The release still supports one character, one operator, one OneBot account, and text sending. Incoming media is represented only as text placeholders.
 
 ---
 
-这是 MoonanBot v0.0.1 的第四个候选版本，新增 OneBot「出站连接」模式：由 MoonanBot 主动拨号连接 QQ 实现，这正是容器化 SnowLuma 部署所需要的。
+这是 MoonanBot v0.0.1 的第五个候选版本，修复了日常使用中发现的三个缺陷：WebUI 无 body 请求、推演运行醒着停滞、群列表与 QQ 漂移。
 
-在此之前只有反向 WebSocket 一条路：SnowLuma 主动连接 `ws://127.0.0.1:21314/onebot/v11/ws`，而 MoonanBot 只监听宿主机回环地址。运行在 Docker 容器里的账号无法访问宿主机回环，只能额外加一层 TCP 中继。RC.4 取消了这一要求：`onebot.outbound` 是一个客户端列表——名称、WebSocket 地址、接入 Token、可选 `self_id`、角色、重连间隔与启用开关——MoonanBot 会按 OneBot 约定的请求头（`X-Client-Role`、可选 `X-Self-ID`、`Authorization: Bearer …`）逐条拨出。事件与 API 回包走同一条连接；`self_id` 留空时会从第一条事件中自动学习。连接断开后按指数退避重试、上限 30 秒；保存设置时只重连真正发生变化的条目。
+WebUI 过去给所有请求都带上 `Content-Type: application/json`，包括没有 body 的请求。Fastify 5 会拒绝「声明 JSON 却空 body」的请求，于是启动、暂停、唤醒、刷新模型、恢复提示词、退出登录以及所有删除按钮一律 `400 FST_ERR_CTP_EMPTY_JSON_BODY`，而带 body 的保存按钮却一切正常。现在仅当请求确实带 body 时才附加该头，上述控件一次全部修复。
 
-反向连接现在由 `onebot.acceptReverse` 控制，默认 `true`，因此原有 SnowLuma 账号的行为完全不变；只需要出站路径的操作者可以将其关闭。设置行在读取时会做归一化，RC.3 写入的数据库无需迁移即可获得新字段，`outbound: []` 等价于旧行为。连接页面新增出站区块，逐个显示状态（`已连接` / `重连中` / `已停用`）与最近一次错误，`GET /api/v1/runtime` 也会返回同一份列表。
+推演 Agent 的设计要求每轮运行以 Terminating Action 收尾：即 `idle` 或 `sleep` 这两个会调度下次唤醒的动作。旧守卫只统计「是否调用过动作」，因此「发了消息然后直接结束」的运行会让角色停在 `awake` 且没有定时器——除非有人发消息，否则永久静默。现在守卫检查结束状态而非调用次数：循环结束后仍醒着的角色会收到继续纠正提示（区分「完全没动作」与「动作了但没安排下一步」两种文案），超过重试次数后仍由原有的强制待机 30 分钟兜底。
 
-从 RC.3 升级会保留数据库、WebUI 密码、角色、模型配置与旧账号配置；重装不会删除 `/var/lib/moonanbot`，并会在升级前生成 SQLite 备份。
+Roster Sync 过去只在连接建立时新增好友与群、从不清理，角色退掉的群会永远留在社交世界里，WebUI 群列表与 QQ 越漂越远。现在平台名单是成员资格的权威：成功且非空的 `get_group_list` 会删除本地多出的群（每次删除记录一条 `roster_sync` 事件）；平台返回空名单时跳过清理以防实现抽风误删；不在好友名单里的联系人保留记录但取消 `isFriend`。同步还在连接期间每六小时自动执行一次，并可通过 `POST /api/v1/platform/sync` 手动触发——群聊页新增「同步名单 / Sync roster」按钮。
+
+从 RC.4 升级会保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。
 
 本版本仍只支持单角色、单操作者、单 OneBot 账号和纯文本发送，媒体仅转为文字占位。

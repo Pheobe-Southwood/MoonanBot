@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.1-rc.5 — 2026-09-28
+
+- Fixed the WebUI sending `Content-Type: application/json` on bodyless requests, which made Fastify reject Start/Pause/Wake, model refresh, prompt restore, logout, and every delete button with `400 FST_ERR_CTP_EMPTY_JSON_BODY`.
+- Enforced the terminating-action invariant: a simulation run that ends while the character is still awake (no idle/sleep scheduled) now receives a continuation correction — worded differently for "no action at all" and "acted but scheduled nothing" — before the forced thirty-minute idle fallback.
+- Made the platform roster authoritative: Roster Sync now deletes local groups absent from a successful non-empty `get_group_list` (each removal recorded as a `roster_sync` event), skips pruning on an empty platform list, and clears `isFriend` on contacts missing from `get_friend_list`.
+- Added `POST /api/v1/platform/sync`, a "Sync roster" button on the Groups tab, and a six-hour periodic Roster Sync while connected.
+- Added ADR-0005 (platform roster authority) and ADR-0006 (terminating-action invariant) plus the matching CONTEXT.md terms.
+
 ## 0.0.1-rc.4 — 2026-09-17
 
 - Added outbound OneBot clients (`onebot.outbound`) so MoonanBot dials the QQ implementation instead of requiring an inbound reverse WebSocket; each entry carries a name, URL, access token, optional `self_id`, role, reconnect interval, and an enabled flag.
