@@ -1,7 +1,7 @@
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/v1${path}`, {
     credentials: "same-origin",
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+    headers: init?.body === undefined ? (init?.headers ?? {}) : { "Content-Type": "application/json", ...(init?.headers ?? {}) },
     ...init,
   });
   if (!response.ok) {
