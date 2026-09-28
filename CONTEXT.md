@@ -24,6 +24,10 @@ _Avoid_: Reply, hidden reasoning
 A validated thing the Character does through `perform_action`, including using the phone, idling, and sleeping.
 _Avoid_: Tool call
 
+**Terminating Action**:
+An Action — idle or sleep — that schedules the Character's next wake and ends the current simulation run. A run that ends without one receives a continuation correction.
+_Avoid_: Final message, exit tool
+
 ## Experience and memory
 
 **World Event**:
@@ -76,3 +80,7 @@ _Avoid_: Inbound socket
 **Outbound Client**:
 A named, configurable Platform Connection that MoonanBot dials itself, used when the OneBot implementation cannot reach MoonanBot's listener.
 _Avoid_: Relay, tunnel
+
+**Roster Sync**:
+The reconciliation of MoonanBot's known groups and contacts with the platform's current friend and group lists. The platform list is authoritative for membership.
+_Avoid_: Friend sync, group refresh
