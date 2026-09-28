@@ -12,7 +12,7 @@ afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.useRea
 function fakePlatform(): ChatPlatformAdapter {
   return {
     id: "fake", status: () => ({ connected: true, selfId: "bot", roles: ["universal"] }),
-    sendText: async () => ({ platformMessageId: "1" }), syncRoster: async () => undefined, close: async () => undefined,
+    sendText: async () => ({ platformMessageId: "1" }), syncRoster: async () => ({ groupsAdded: 0, groupsRemoved: 0, contactsUpdated: 0 }), close: async () => undefined,
   };
 }
 
@@ -75,9 +75,28 @@ describe("runtime orchestration with pi faux provider", () => {
     const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
     cleanups.push(() => { void orchestrator.close(); });
     await orchestrator.startBot();
-    expect(db.getRuntime()).toMatchObject({ mode: "entertaining", health: "degraded", lastError: "推演 Agent 连续未执行动作" });
+    expect(db.getRuntime()).toMatchObject({ mode: "entertaining", health: "degraded", lastError: "推演 Agent 连续未安排下一步行动" });
     expect(db.eventsSince(0).some((event) => event.type === "system_warning")).toBe(true);
     expect(faux.state.callCount).toBe(3);
+  });
+
+  it("corrects a run that acted but scheduled no continuation, then accepts an idle", async () => {
+    const { db, faux, providers } = configured();
+    faux.setResponses([
+      fauxAssistantMessage([fauxThinking("先打开手机看看。"), fauxToolCall("perform_action", { action: "open_phone" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("看完手机了，没有什么要做的。"),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "idle", durationMinutes: 30, activity: "整理桌面" })], { stopReason: "toolUse" }),
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.startBot();
+    expect(db.getRuntime()).toMatchObject({ mode: "entertaining", health: "healthy" });
+    expect(db.getRuntime().nextWakeAt).not.toBeNull();
+    expect(faux.state.callCount).toBe(3);
+    const run = db.listAgentRuns(10, "simulation")[0]!;
+    const corrections = db.listAgentMessages(run.id).filter((message) => message.role === "user" && message.content.includes("没有安排下一步行动"));
+    expect(corrections.length).toBeGreaterThanOrEqual(1);
+    expect(corrections.every((message) => message.content.includes("本轮动作已结束"))).toBe(true);
   });
 
   it("retries failed synthesis batches and compacts old context only after commit", async () => {

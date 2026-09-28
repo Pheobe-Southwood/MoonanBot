@@ -206,6 +206,11 @@ export class RuntimeOrchestrator {
     return this.simulationAgent;
   }
 
+  /** A run that ends while the Character is still awake scheduled no continuation (no Terminating Action) and must be corrected. */
+  private needsContinuation(): boolean {
+    return this.db.getRuntime().mode === "awake";
+  }
+
   async activate(text: string, urgent = false): Promise<void> {
     if (this.db.getRuntime().mode === "paused") return;
     let agent: Agent;
@@ -226,17 +231,20 @@ export class RuntimeOrchestrator {
     try {
       await agent.prompt(text);
       const settings = this.db.getSettings().value;
-      for (let attempt = 0; this.simulationActionCalls === 0 && attempt < settings.simulation.missingActionRetries; attempt += 1) {
-        const correction = `请让${this.db.getProfile().name}执行一个动作，若你想暂时结束会话，请让${this.db.getProfile().name}自娱自乐或睡觉`;
+      for (let attempt = 0; this.needsContinuation() && attempt < settings.simulation.missingActionRetries; attempt += 1) {
+        const name = this.db.getProfile().name;
+        const correction = this.simulationActionCalls === 0
+          ? `请让${name}执行一个动作，若你想暂时结束会话，请让${name}自娱自乐或睡觉`
+          : `本轮动作已结束，但${name}没有安排下一步行动；请让${name}自娱自乐或睡觉以结束本轮。`;
         this.db.addAgentMessage(runId, "user", correction);
         await agent.prompt(correction);
       }
-      if (this.simulationActionCalls === 0) {
+      if (this.needsContinuation()) {
         const dueAt = Date.now() + 30 * 60_000;
         this.db.cancelPendingTimers();
         this.db.createTimer("idle", dueAt, { forced: true });
-        this.db.setRuntime({ mode: "entertaining", health: "degraded", nextWakeAt: dueAt, lastError: "推演 Agent 连续未执行动作" });
-        this.db.addEvent("system_warning", "推演 Agent 连续未执行动作，系统强制待机30分钟。", {});
+        this.db.setRuntime({ mode: "entertaining", health: "degraded", nextWakeAt: dueAt, lastError: "推演 Agent 连续未安排下一步行动" });
+        this.db.addEvent("system_warning", "推演 Agent 连续未安排下一步行动，系统强制待机30分钟。", {});
       }
       const usage = this.usage(agent.state.messages);
       this.db.endAgentRun(runId, "completed", usage);
