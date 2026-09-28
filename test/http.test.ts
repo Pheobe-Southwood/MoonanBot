@@ -78,6 +78,17 @@ describe("Web API", () => {
     expect(response.body).toContain("SOUL");
   });
 
+  it("accepts bodyless runtime posts and guards manual roster sync behind auth", async () => {
+    const app = await fixture();
+    const cookie = await login(app);
+    const bodyless = await app.server.inject({ method: "POST", url: "/api/v1/runtime/pause", headers: { cookie } });
+    expect(bodyless.statusCode).toBe(200);
+    expect((await app.server.inject({ method: "POST", url: "/api/v1/platform/sync" })).statusCode).toBe(401);
+    const sync = await app.server.inject({ method: "POST", url: "/api/v1/platform/sync", headers: { cookie } });
+    expect(sync.statusCode).toBe(503);
+    expect(sync.json().error).toContain("OneBot API connection is not available");
+  });
+
   it("keeps a OneBot socket open when the client sends a capitalized X-Client-Role", async () => {
     const app = await fixture();
     const token = app.db.getSettings().value.onebot.accessToken;

@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { AppSettings, ConversationTarget, OneBotRole } from "../domain/types.js";
 import type { MoonanDatabase } from "../storage/database.js";
-import type { ChatPlatformAdapter, PlatformMessageEvent, PlatformStatus, SendResult } from "./types.js";
+import type { ChatPlatformAdapter, PlatformMessageEvent, PlatformStatus, RosterSyncSummary, SendResult } from "./types.js";
 
 type Role = OneBotRole;
 
 const ROLES: readonly Role[] = ["event", "api", "universal"];
 const OUTBOUND_OPEN_TIMEOUT_MS = 30_000;
 const OUTBOUND_BACKOFF_MAX_MS = 30_000;
+const ROSTER_SYNC_INTERVAL_MS = 6 * 60 * 60_000;
 
 interface Connection {
   socket: WebSocket;
@@ -103,6 +104,7 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
   private readonly connections = new Set<Connection>();
   private readonly pending = new Map<string, PendingRequest>();
   private readonly outbound = new Map<string, OutboundEntry>();
+  private readonly rosterTimer: NodeJS.Timeout;
   private stopped = false;
   private sequence = 0;
 
@@ -110,7 +112,12 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
     private readonly db: MoonanDatabase,
     private readonly settings: () => AppSettings,
     private readonly onMessage: (event: PlatformMessageEvent) => Promise<void>,
-  ) {}
+  ) {
+    this.rosterTimer = setInterval(() => {
+      if (this.apiConnection()) void this.syncRoster().catch(() => undefined);
+    }, ROSTER_SYNC_INTERVAL_MS);
+    this.rosterTimer.unref?.();
+  }
 
   attach(socket: WebSocket, input: OneBotAttach): { ok: true } | { ok: false; code: number; reason: string } {
     if (!input.selfId) return { ok: false, code: 4400, reason: "Missing X-Self-ID" };
@@ -355,31 +362,56 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
     return { platformMessageId: data?.message_id === undefined ? null : String(data.message_id) };
   }
 
-  async syncRoster(): Promise<void> {
+  async syncRoster(): Promise<RosterSyncSummary> {
+    const summary: RosterSyncSummary = { groupsAdded: 0, groupsRemoved: 0, contactsUpdated: 0 };
     const [friends, groups] = await Promise.allSettled([this.call("get_friend_list", {}), this.call("get_group_list", {})]);
     if (friends.status === "fulfilled" && Array.isArray(friends.value)) {
+      const friendIds = new Set<string>();
       for (const friend of friends.value) {
         const id = String(friend.user_id ?? "");
         if (!id) continue;
+        friendIds.add(id);
         const existing = this.db.getContact(id);
         this.db.upsertContact({
           platform: "onebot", id, name: String(friend.remark || friend.nickname || id), aliases: existing?.aliases ?? [],
           summary: existing?.summary ?? "", importance: existing?.importance ?? "normal", isFriend: true,
         }, "roster", false);
       }
+      for (const contact of this.db.listContacts()) {
+        if (contact.isFriend && !friendIds.has(contact.id)) {
+          this.db.upsertContact({ ...contact, isFriend: false }, "roster", false);
+          summary.contactsUpdated += 1;
+        }
+      }
     }
     if (groups.status === "fulfilled" && Array.isArray(groups.value)) {
+      const groupIds = new Set<string>();
       for (const group of groups.value) {
         const id = String(group.group_id ?? "");
         if (!id) continue;
+        groupIds.add(id);
         const existing = this.db.listGroups().find((item) => item.id === id);
+        if (!existing) summary.groupsAdded += 1;
         this.db.upsertGroup({ platform: "onebot", id, name: String(group.group_name || id), summary: existing?.summary ?? "" }, "roster");
       }
+      const local = this.db.listGroups();
+      if (groupIds.size > 0) {
+        for (const group of local) {
+          if (groupIds.has(group.id)) continue;
+          this.db.deleteGroup(group.id);
+          this.db.addEvent("roster_sync", `群${group.name}已不在平台群名单中，移除本地记录。`, { groupId: group.id });
+          summary.groupsRemoved += 1;
+        }
+      } else if (local.length > 0) {
+        this.db.addEvent("roster_sync", "平台返回空群名单，跳过群清理。", {});
+      }
     }
+    return summary;
   }
 
   async close(): Promise<void> {
     this.stopped = true;
+    clearInterval(this.rosterTimer);
     for (const entry of this.outbound.values()) this.closeOutboundSocket(entry);
     this.outbound.clear();
     for (const connection of this.connections) connection.socket.close(1001, "MoonanBot shutting down");

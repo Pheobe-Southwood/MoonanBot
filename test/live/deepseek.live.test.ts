@@ -25,7 +25,7 @@ function text(message: AssistantMessage): string {
 function platform(): ChatPlatformAdapter {
   return {
     id: "live-fake", status: () => ({ connected: true, selfId: "bot", roles: ["universal"] }),
-    sendText: async () => ({ platformMessageId: "live-simulated" }), syncRoster: async () => undefined, close: async () => undefined,
+    sendText: async () => ({ platformMessageId: "live-simulated" }), syncRoster: async () => ({ groupsAdded: 0, groupsRemoved: 0, contactsUpdated: 0 }), close: async () => undefined,
   };
 }
 

@@ -7,7 +7,7 @@ import { testDatabase, textOf } from "./helpers.js";
 function platform(send: ChatPlatformAdapter["sendText"] = async () => ({ platformMessageId: "sent-1" })): ChatPlatformAdapter {
   return {
     id: "fake", status: () => ({ connected: true, selfId: "bot", roles: ["universal"] }),
-    sendText: send, syncRoster: async () => undefined, close: async () => undefined,
+    sendText: send, syncRoster: async () => ({ groupsAdded: 0, groupsRemoved: 0, contactsUpdated: 0 }), close: async () => undefined,
   };
 }
 

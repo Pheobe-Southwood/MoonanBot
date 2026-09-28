@@ -22,11 +22,17 @@ export interface PlatformStatus {
   roles: string[];
 }
 
+export interface RosterSyncSummary {
+  groupsAdded: number;
+  groupsRemoved: number;
+  contactsUpdated: number;
+}
+
 export interface ChatPlatformAdapter {
   readonly id: string;
   status(): PlatformStatus;
   sendText(target: ConversationTarget, text: string, signal?: AbortSignal): Promise<SendResult>;
-  syncRoster(): Promise<void>;
+  syncRoster(): Promise<RosterSyncSummary>;
   fetchHistory?(target: ConversationTarget, count: number): Promise<never>;
   close(): Promise<void>;
 }

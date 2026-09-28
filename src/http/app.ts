@@ -68,7 +68,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
   });
 
-  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.4" }));
+  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.5" }));
   server.post("/api/v1/auth/login", async (request, reply) => {
     const address = request.ip;
     const state = failures.get(address);
@@ -139,6 +139,18 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     return db.upsertGroup(input);
   });
   server.delete("/api/v1/groups/:id", async (request) => ({ deleted: db.deleteGroup((request.params as any).id) }));
+  server.post("/api/v1/platform/sync", async (_request, reply) => {
+    if (!onebot.status().connected) {
+      reply.code(503);
+      return { error: "OneBot API connection is not available" };
+    }
+    try {
+      return { synced: await onebot.syncRoster() };
+    } catch (error) {
+      reply.code(503);
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  });
 
   server.get("/api/v1/settings", async () => db.getSettings());
   server.put("/api/v1/settings", async (request, reply) => {

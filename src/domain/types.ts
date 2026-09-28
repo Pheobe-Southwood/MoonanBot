@@ -90,6 +90,7 @@ export type WorldEventType =
   | "alarm_elapsed"
   | "action_completed"
   | "message_observed"
+  | "roster_sync"
   | "system_warning";
 
 export interface WorldEvent {
