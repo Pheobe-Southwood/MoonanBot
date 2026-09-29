@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.1-rc.8 — 2026-09-29
+
+- Fixed `forceImageInput` never reaching the provider wire: the flag only relaxed MoonanBot's own capability gate, while pi-ai's message transform still replaced images with `(image omitted: model does not support images)` whenever the model record's `input` lacked `"image"` — which is always the case for custom-provider models (hardcoded `input:["text"]`). Slot selection now patches the pi-ai Model record before serialization, so forced slots send real `image_url` data URIs.
+- Fixed custom-provider thinking levels being silently dropped: remote-fetched custom models are fabricated with `reasoning:false`, so pi-ai's `clampThinkingLevel` collapsed any selected level to `off` and sent no `reasoning_effort`; even with reasoning enabled, `xhigh`/`max` were downgraded to `high` without an explicit `thinkingLevelMap`. For custom providers, a non-`off` slot level now forces `reasoning:true` and maps `xhigh`/`max` to their verbatim wire values.
+- Added the `max` thinking level (already supported by pi-ai/pi-agent-core) to the domain type, settings validation, and the WebUI thinking-level selector.
+- Catalog models keep pi-ai's authoritative capability metadata: reasoning is never force-enabled on them (which would 400 on providers that genuinely lack it), and `forceImageInput` remains the only image override.
+- WebUI: custom endpoints show a hint that the selected thinking level is sent verbatim as `reasoning_effort` (choose `off` to send nothing).
+
 ## 0.0.1-rc.7 — 2026-09-29
 
 - Added image understanding with a dual path (ADR-0008): image-capable consumers receive real `ImageContent` inline (newest-first, capped by the new `media.maxInjectedImages`, default 10); image-blind consumers receive `[图片：description]` text from a Vision Agent, generated lazily on first need and cached permanently.

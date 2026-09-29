@@ -12,7 +12,7 @@ import type { MoonanDatabase, TimerRecord } from "../storage/database.js";
 import { renderPrompt } from "./prompts.js";
 import { buildSimulationTools } from "./simulation-tools.js";
 import { buildSynthesisTools } from "./synthesis-tools.js";
-import { currentCapabilities, describeMedia, effectiveSelection, formatWorld, selectionSeesImages } from "./vision.js";
+import { applySlotOverrides, currentCapabilities, describeMedia, effectiveSelection, formatWorld, selectionSeesImages } from "./vision.js";
 
 function userMessage(text: string, images: ImageContent[] = []): UserMessage {
   return images.length
@@ -275,9 +275,9 @@ export class RuntimeOrchestrator {
 
   private selectedModel(agent: "simulation" | "synthesis"): { model: Model<any>; thinkingLevel: AgentSelection["thinkingLevel"] } {
     const selected = effectiveSelection(this.db, agent);
-    const model = selected.providerId && selected.modelId ? this.providers.models.getModel(selected.providerId, selected.modelId) : undefined;
-    if (!model) throw new Error(`${agent}_model_not_configured`);
-    return { model, thinkingLevel: selected.thinkingLevel };
+    const resolved = selected.providerId && selected.modelId ? this.providers.models.getModel(selected.providerId, selected.modelId) : undefined;
+    if (!resolved) throw new Error(`${agent}_model_not_configured`);
+    return { model: applySlotOverrides(this.providers, resolved, selected), thinkingLevel: selected.thinkingLevel };
   }
 
   private ensureSimulationAgent(): Agent {

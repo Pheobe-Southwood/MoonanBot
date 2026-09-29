@@ -117,6 +117,13 @@ describe("behavior domain", () => {
     expect(textOnly).toBeLessThan(10);
   });
 
+  it("accepts the max thinking level and rejects unknown levels", () => {
+    const maxed = normalizeSettings({ agents: { default: { providerId: "p", modelId: "m", thinkingLevel: "max" } } });
+    expect(maxed.agents.default.thinkingLevel).toBe("max");
+    const bogus = normalizeSettings({ agents: { default: { providerId: "p", modelId: "m", thinkingLevel: "turbo" } } });
+    expect(bogus.agents.default.thinkingLevel).toBe("medium");
+  });
+
   it("normalizes legacy settings payloads into media and vision defaults", () => {
     const legacy = { web: { port: 21314 }, agents: { default: { providerId: "p", modelId: "m", thinkingLevel: "high" } } };
     const normalized = normalizeSettings(legacy);

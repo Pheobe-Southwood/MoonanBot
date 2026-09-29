@@ -1,4 +1,4 @@
-import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model, TextContent } from "@earendil-works/pi-ai";
 import { supportsImageInput } from "../domain/behavior.js";
 import type { AgentSelection, MessageMedia } from "../domain/types.js";
 import type { ProviderRegistry } from "../providers/registry.js";
@@ -31,6 +31,32 @@ export function resolveSelection(selection: AgentSelection, fallback: AgentSelec
 export function effectiveSelection(db: MoonanDatabase, agent: "simulation" | "synthesis" | "vision"): AgentSelection {
   const agents = db.getSettings().value.agents;
   return resolveSelection(agents[agent], agents.default);
+}
+
+/**
+ * Rewrites the pi-ai Model record so the operator's per-slot intent survives serialization.
+ *
+ * pi-ai strips images when `model.input` lacks "image" and clamps a thinking level to "off"
+ * when `model.reasoning` is false (and drops xhigh/max without an explicit map entry). Custom
+ * providers fabricate both fields — remote models are hardcoded `reasoning:false, input:["text"]` —
+ * so the operator's slot selection is the only trustworthy signal there. Catalog metadata stays
+ * authoritative: we force images only under the explicit `forceImageInput` flag, and never force
+ * reasoning on a catalog model (that would 400 on a provider that genuinely lacks it).
+ */
+export function applySlotOverrides(providers: ProviderRegistry, model: Model<any>, selection: AgentSelection): Model<any> {
+  let next = model;
+  const input = next.input ?? ["text"];
+  if (selection.forceImageInput && !input.includes("image")) {
+    next = { ...next, input: [...input, "image"] as ("text" | "image")[] };
+  }
+  const level = selection.thinkingLevel;
+  if (level !== "off" && providers.isCustomProvider(model.provider)) {
+    const map = { ...next.thinkingLevelMap };
+    if (map.xhigh === undefined) map.xhigh = "xhigh";
+    if (map.max === undefined) map.max = "max";
+    next = { ...next, reasoning: true, thinkingLevelMap: map };
+  }
+  return next;
 }
 
 /** Effective image capability of one agent slot: catalog modalities or the operator's force override. */
@@ -68,10 +94,11 @@ export function currentCapabilities(db: MoonanDatabase, providers: ProviderRegis
 export async function describeMedia(db: MoonanDatabase, providers: ProviderRegistry, media: MessageMedia): Promise<string | null> {
   if (media.status !== "cached" || !media.bytes || !media.mime) return null;
   const selection = effectiveSelection(db, "vision");
-  const model = selection.providerId && selection.modelId
+  const resolved = selection.providerId && selection.modelId
     ? providers.models.getModel(selection.providerId, selection.modelId)
     : undefined;
-  if (!model) return null;
+  if (!resolved) return null;
+  const model = applySlotOverrides(providers, resolved, selection);
   const systemPrompt = renderPrompt(db.getPrompt("vision").template, formatWorld(db));
   const runId = db.beginAgentRun("vision", `描述图片 ${media.fileId}`);
   db.addAgentMessage(runId, "user", "[图片]");

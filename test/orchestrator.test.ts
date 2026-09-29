@@ -30,7 +30,7 @@ function configured() {
   settings.value.simulation.messageIntervalMs = 0;
   settings.value.synthesis.retryBaseDelayMs = 0;
   fixture.db.updateSettings(settings.value, settings.version);
-  return { ...fixture, faux, providers: { models } as unknown as ProviderRegistry };
+  return { ...fixture, faux, providers: { models, isCustomProvider: () => false } as unknown as ProviderRegistry };
 }
 
 async function eventually(assertion: () => void, timeout = 2_000): Promise<void> {
@@ -309,7 +309,7 @@ function configuredWithInput(input: ("text" | "image")[], vision: boolean) {
   settings.value.synthesis.retryBaseDelayMs = 0;
   fixture.db.updateSettings(settings.value, settings.version);
   fixture.db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "do_not_disturb", isFriend: true });
-  return { ...fixture, faux, providers: { models } as unknown as ProviderRegistry };
+  return { ...fixture, faux, providers: { models, isCustomProvider: () => false } as unknown as ProviderRegistry };
 }
 
 function parkInWaiting(db: ReturnType<typeof testDatabase>["db"]): number {

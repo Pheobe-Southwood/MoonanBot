@@ -106,7 +106,7 @@ export interface WorldEvent {
 export interface AgentSelection {
   providerId: string | null;
   modelId: string | null;
-  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Operator override: treat the selected model as image-capable even when its catalog entry says otherwise. */
   forceImageInput?: boolean;
 }
