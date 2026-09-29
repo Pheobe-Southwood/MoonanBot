@@ -94,7 +94,11 @@ tar -xzf "$ASSET" -C "$STAGING_DIR"
 if [[ -f "$DATA_ROOT/moonanbot.sqlite" && -x "$APP_ROOT/runtime/bin/node" && -f "$APP_ROOT/current/dist/cli.js" ]]; then
   systemctl stop moonanbot.service 2>/dev/null || true
   BACKUP="$DATA_ROOT/backups/pre-${RELEASE_VERSION}-$(date -u +%Y%m%dT%H%M%SZ).sqlite"
-  runuser -u moonanbot -- env MOONANBOT_DATA_DIR="$DATA_ROOT" "$APP_ROOT/runtime/bin/node" "$APP_ROOT/current/dist/cli.js" backup "$BACKUP"
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u moonanbot -- env MOONANBOT_DATA_DIR="$DATA_ROOT" "$APP_ROOT/runtime/bin/node" "$APP_ROOT/current/dist/cli.js" backup "$BACKUP"
+  else
+    sudo -u moonanbot env MOONANBOT_DATA_DIR="$DATA_ROOT" "$APP_ROOT/runtime/bin/node" "$APP_ROOT/current/dist/cli.js" backup "$BACKUP"
+  fi
 fi
 
 rm -rf "$RELEASE_DIR"
