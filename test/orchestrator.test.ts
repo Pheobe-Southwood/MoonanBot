@@ -201,6 +201,7 @@ describe("runtime orchestration with pi faux provider", () => {
     const fixture = testDatabase();
     cleanups.push(fixture.cleanup);
     const db = fixture.db;
+    const since = Date.now() - 1_000;
     db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "normal", isFriend: true });
     db.upsertContact({ platform: "onebot", id: "9", name: "Nine", aliases: [], summary: "", importance: "priority_plus", isFriend: true });
     db.setRuntime({ mode: "waiting", phone: { kind: "chat", target: sevenTarget } });
@@ -209,7 +210,7 @@ describe("runtime orchestration with pi faux provider", () => {
       direction: "incoming", content: "盯着屏幕时来的消息", segments: [], occurredAt: Date.now(), observedAt: Date.now(),
       deliveryStatus: "received", readAt: null,
     });
-    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "count", count: 5, since: Date.now() - 1 });
+    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "count", count: 5, since });
     const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
     cleanups.push(() => { void orchestrator.close(); });
     await orchestrator.handleIncoming(privateEvent("9", "loud"));
@@ -265,13 +266,14 @@ describe("runtime orchestration with pi faux provider", () => {
     const fixture = testDatabase();
     cleanups.push(fixture.cleanup);
     const db = fixture.db;
+    const since = Date.now() - 1_000;
     db.setRuntime({ mode: "waiting", phone: { kind: "chat", target: sevenTarget } });
     db.insertMessage({
       id: "watched-2", platformMessageId: "w2", target: sevenTarget, senderId: "7", senderName: "Seven",
       direction: "incoming", content: "等待期间来的消息", segments: [], occurredAt: Date.now(), observedAt: Date.now(),
       deliveryStatus: "received", readAt: null,
     });
-    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "seconds", seconds: 30, since: Date.now() - 1 });
+    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "seconds", seconds: 30, since });
     const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
     cleanups.push(() => { void orchestrator.close(); });
     await orchestrator.wakeBot();
