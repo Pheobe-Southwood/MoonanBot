@@ -7,8 +7,8 @@ import fastifyStatic from "@fastify/static";
 import websocket from "@fastify/websocket";
 import type WebSocket from "ws";
 import { RuntimeOrchestrator } from "../agents/orchestrator.js";
-import { SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, validatePromptTemplate } from "../agents/prompts.js";
-import type { AppSettings, CharacterProfile, ContactRecord, GroupRecord, Importance } from "../domain/types.js";
+import { SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, VISION_SYSTEM_PROMPT, validatePromptTemplate } from "../agents/prompts.js";
+import type { AgentKind, AppSettings, CharacterProfile, ContactRecord, GroupRecord, Importance } from "../domain/types.js";
 import { assertValidSettings } from "../domain/settings.js";
 import { OneBotV11Adapter } from "../platforms/onebot.js";
 import { ProviderRegistry } from "../providers/registry.js";
@@ -68,7 +68,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
   });
 
-  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.6" }));
+  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.7" }));
   server.post("/api/v1/auth/login", async (request, reply) => {
     const address = request.ip;
     const state = failures.get(address);
@@ -163,21 +163,34 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     } catch (error) { return reply.code(String(error).includes("conflict") ? 409 : 400).send({ error: error instanceof Error ? error.message : String(error) }); }
   });
 
-  server.get("/api/v1/prompts/:agent", async (request) => {
-    const agent = (request.params as any).agent as "simulation" | "synthesis";
+  const promptAgents: readonly AgentKind[] = ["simulation", "synthesis", "vision"];
+  const promptRequired: Record<AgentKind, string[]> = {
+    simulation: ["botName", "soul", "environment", "memory", "relationships", "groups"],
+    synthesis: ["botName", "soul", "memory", "relationships", "groups"],
+    vision: [],
+  };
+  const promptDefaults: Record<AgentKind, string> = {
+    simulation: SIMULATION_SYSTEM_PROMPT,
+    synthesis: SYNTHESIS_SYSTEM_PROMPT,
+    vision: VISION_SYSTEM_PROMPT,
+  };
+  server.get("/api/v1/prompts/:agent", async (request, reply) => {
+    const agent = (request.params as any).agent as AgentKind;
+    if (!promptAgents.includes(agent)) return reply.code(404).send({ error: "not_found" });
     return { current: db.getPrompt(agent), versions: db.listPromptVersions(agent) };
   });
   server.put("/api/v1/prompts/:agent", async (request, reply) => {
-    const agent = (request.params as any).agent as "simulation" | "synthesis";
+    const agent = (request.params as any).agent as AgentKind;
+    if (!promptAgents.includes(agent)) return reply.code(404).send({ error: "not_found" });
     const template = String((request.body as any)?.template ?? "");
-    const required = agent === "simulation" ? ["botName", "soul", "environment", "memory", "relationships", "groups"] : ["botName", "soul", "memory", "relationships", "groups"];
-    const missing = validatePromptTemplate(template, required);
+    const missing = validatePromptTemplate(template, promptRequired[agent]);
     if (missing.length) return reply.code(400).send({ error: "missing_placeholders", missing });
     return db.setPrompt(agent, template);
   });
-  server.post("/api/v1/prompts/:agent/reset", async (request) => {
-    const agent = (request.params as any).agent as "simulation" | "synthesis";
-    return db.setPrompt(agent, agent === "simulation" ? SIMULATION_SYSTEM_PROMPT : SYNTHESIS_SYSTEM_PROMPT);
+  server.post("/api/v1/prompts/:agent/reset", async (request, reply) => {
+    const agent = (request.params as any).agent as AgentKind;
+    if (!promptAgents.includes(agent)) return reply.code(404).send({ error: "not_found" });
+    return db.setPrompt(agent, promptDefaults[agent]);
   });
 
   server.get("/api/v1/activity/runs", async (request) => {
@@ -248,6 +261,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
     const simulationPrompt = String(body.prompts?.simulation ?? "");
     const synthesisPrompt = String(body.prompts?.synthesis ?? "");
+    const visionPrompt = body.prompts?.vision === undefined || body.prompts?.vision === null ? null : String(body.prompts.vision);
     if (validatePromptTemplate(simulationPrompt, ["botName", "soul", "environment", "memory", "relationships", "groups"]).length
       || validatePromptTemplate(synthesisPrompt, ["botName", "soul", "memory", "relationships", "groups"]).length) {
       return reply.code(400).send({ error: "invalid_prompt_template" });
@@ -277,6 +291,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
         }, "import");
         db.setPrompt("simulation", simulationPrompt);
         db.setPrompt("synthesis", synthesisPrompt);
+        if (visionPrompt !== null && visionPrompt.trim()) db.setPrompt("vision", visionPrompt);
         db.addEvent("system_warning", "角色包已导入；消息、凭据与运行历史未被修改。", {});
       });
       return { ok: true, profile: db.getProfile() };

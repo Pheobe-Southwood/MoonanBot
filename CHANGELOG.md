@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.0.1-rc.7 — 2026-09-29
+
+- Added image understanding with a dual path (ADR-0008): image-capable consumers receive real `ImageContent` inline (newest-first, capped by the new `media.maxInjectedImages`, default 10); image-blind consumers receive `[图片：description]` text from a Vision Agent, generated lazily on first need and cached permanently.
+- Added the Vision Agent as a third model slot beside Simulation and Synthesis: its own provider/model/thinking level, an editable and versioned system prompt (no required placeholders), activity traces as `vision` runs, and inclusion in character export/import (bundles without it stay importable).
+- Image capability resolves from the pi-ai catalog (`model.input`, now exposed by `GET /api/v1/providers`) or the new per-slot `forceImageInput` override for mis-catalogued models; the WebUI marks image-capable models with 🖼, shows a capability pill, and offers the force toggle.
+- Inbound image segments are downloaded at observation time into a new `message_media` table (segment URL first, OneBot `get_image` fallback, magic-byte format sniffing, 2-way concurrency); bytes are purged after `media.byteTtlDays` (default 7) while descriptions survive, and pending downloads re-enqueue after a restart.
+- Persisted simulation state never carries base64: image blocks become `[图片]` markers when a run ends, and the archive threshold estimates a flat 1500 tokens per image block.
+- New validated settings group `media` (`enabled`, `downloadTimeoutMs`, `byteTtlDays`, `maxInjectedImages`) with a WebUI card; readiness gained non-blocking warnings when blind models have no usable Vision Agent, surfaced on the Overview page.
+- Added ADR-0008 plus the CONTEXT.md terms Vision Agent, Media Cache, Image Description, and Image Input Capability; updated the architecture, security, and OneBot docs for the media pipeline.
+
 ## 0.0.1-rc.6 — 2026-09-29
 
 - Refactored the simulation action surface: removed `list_available_actions`; every world-event user message and every `perform_action` result (errors included) now ends with the currently available actions.

@@ -1,5 +1,6 @@
 export const SIMULATION_PROMPT_VERSION = "0.0.2";
 export const SYNTHESIS_PROMPT_VERSION = "0.0.1";
+export const VISION_PROMPT_VERSION = "0.0.1";
 
 /** The built-in simulation template from prompt version 0.0.1. Kept verbatim so untouched databases can be exact-match migrated. */
 export const LEGACY_SIMULATION_PROMPT_V0_0_1 = `你是一个角色扮演场景的导演，你精通心理学，尤其是人格心理学；你擅长研究人格特质如何与情境交互，从而预测人的行为。
@@ -71,6 +72,15 @@ export const SYNTHESIS_SYSTEM_PROMPT = `你是一位精通认知心理学——�
 
 当前群聊：
 {{groups}}`;
+
+export const VISION_SYSTEM_PROMPT = `你是一个客观的图片信息提取器。你的描述将被交给一个只能阅读文字的角色，作为它对这张图片的全部认知。
+要求：
+1. 客观描述画面主体、场景、人物动作与表情、显著物体与颜色。
+2. 逐字提取图中出现的所有文字（含界面文字、水印），以「文字：…」引出；无文字则写「无文字」。
+3. 聊天记录截图按顺序转写每条消息的发送者与内容。
+4. 表情包/meme 说明其常见含义与情绪。
+5. 不虚构看不清的内容，不确定就写"看不清"。
+6. 总长度不超过 300 字，直接输出描述本身。`;
 
 export function renderPrompt(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{([a-zA-Z][a-zA-Z0-9]*)\}\}/g, (_match, key) => values[key] ?? "");

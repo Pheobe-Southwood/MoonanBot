@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MoonanDatabase } from "../src/storage/database.js";
-import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT } from "../src/agents/prompts.js";
+import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT, VISION_SYSTEM_PROMPT } from "../src/agents/prompts.js";
 import { testDatabase } from "./helpers.js";
 
 describe("SQLite source of truth", () => {
@@ -133,6 +133,43 @@ describe("SQLite source of truth", () => {
       const exported = JSON.stringify(fixture.db.exportCharacter());
       expect(exported).not.toContain("secret-value");
       expect(exported).not.toContain("raw event");
+      expect(JSON.parse(exported).prompts.vision).toBe(VISION_SYSTEM_PROMPT);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("seeds the vision prompt and versions it like the other agents", () => {
+    const fixture = testDatabase();
+    try {
+      expect(fixture.db.getPrompt("vision").template).toBe(VISION_SYSTEM_PROMPT);
+      fixture.db.setPrompt("vision", "自定义识图提示词");
+      expect(fixture.db.getPrompt("vision").template).toBe("自定义识图提示词");
+      expect(fixture.db.listPromptVersions("vision")).toHaveLength(2);
+      expect(fixture.db.getPrompt("simulation").template).toBe(SIMULATION_SYSTEM_PROMPT);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("round-trips media bytes through SQLite and records vision runs", () => {
+    const fixture = testDatabase();
+    try {
+      const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+      const media = fixture.db.createMedia({ messageId: "msg-1", segmentIndex: 0, fileId: "a.png", url: "http://img.test/a.png" });
+      expect(media.status).toBe("pending");
+      expect(fixture.db.listPendingMedia().map((item) => item.id)).toEqual([media.id]);
+      fixture.db.setMediaCached(media.id, { mime: "image/png", bytes });
+      const cached = fixture.db.getMedia(media.id)!;
+      expect(cached.bytes).toEqual(bytes);
+      expect(cached.byteSize).toBe(bytes.byteLength);
+      expect(cached.status).toBe("cached");
+      expect(fixture.db.listPendingMedia()).toHaveLength(0);
+      fixture.db.setMediaDescription(media.id, "一张测试图");
+      expect(fixture.db.listMediaForMessages(["msg-1", "missing"]).get("msg-1")![0]!.description).toBe("一张测试图");
+      expect(fixture.db.listMediaForMessages([]).size).toBe(0);
+      const runId = fixture.db.beginAgentRun("vision", "描述图片 a.png");
+      fixture.db.endAgentRun(runId, "completed", { input: 10, output: 20 });
+      expect(fixture.db.listAgentRuns(10, "vision")).toMatchObject([{ agent: "vision", status: "completed", inputTokens: 10, outputTokens: 20 }]);
+      const failed = fixture.db.createMedia({ messageId: "msg-1", segmentIndex: 1, fileId: "b.png", url: null });
+      fixture.db.setMediaFailed(failed.id, "no_image_payload");
+      expect(fixture.db.getMedia(failed.id)).toMatchObject({ status: "failed", error: "no_image_payload", bytes: null });
     } finally { fixture.cleanup(); }
   });
 });

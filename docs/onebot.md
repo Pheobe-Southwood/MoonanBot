@@ -40,6 +40,6 @@ The implementation must have a WebSocket **server** enabled with a token; Moonan
 
 Only one `self_id` is accepted, no matter which direction the socket used. A different second account is closed with code `4409` and recorded as an operational problem.
 
-Private and group allowlists are independent. An empty list means allow all. All messages from allowed groups are stored, even when they do not notify the character. Incoming text, mentions, and replies are normalized. Images, audio, video, files, and unsupported segments become text placeholders; no media is downloaded. MoonanBot sends text segments only.
+Private and group allowlists are independent. An empty list means allow all. All messages from allowed groups are stored, even when they do not notify the character. Incoming text, mentions, and replies are normalized. Image segments are downloaded into the media cache (segment URL first, `get_image` API fallback) and understood natively or through the Vision Agent; audio, video, files, and unsupported segments become text placeholders and are not downloaded. MoonanBot sends text segments only.
 
 The adapter matches API responses by `echo`, enforces a configurable timeout, clears pending requests when the last API-capable socket disconnects, caches friend/group rosters, and records every observed group member as a possible relationship contact. Message IDs are deduplicated locally.

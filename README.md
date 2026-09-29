@@ -10,6 +10,7 @@ MoonanBot is a multi-platform AI chat bot dedicated to exploring lifelike presen
 
 - Runs a `SimulationAgent` that directs one character's actions from personality, memory, relationships, and current events.
 - Runs a transactional `SynthesisAgent` that consolidates events into bounded long-term memory and social records.
+- Understands inbound images through a dual path: image-capable models receive the real image, image-blind models receive a cached description from a configurable `VisionAgent`.
 - Connects to OneBot v11 over a reverse WebSocket or as an outbound client that dials the implementation, behind a platform-neutral adapter for future integrations.
 - Provides a bilingual macOS-inspired WebUI with progressive disclosure for configuration, traces, prompts, providers, and data maintenance.
 - Stores all authoritative state in SQLite with WAL, foreign keys, durable timers, versioned prompts, and immutable raw history.
@@ -78,7 +79,7 @@ and send `X-Self-ID`, `X-Client-Role: event|api|universal`, and the configured `
 
 ## Scope and limitations
 
-This release supports one character, one local operator, one OneBot account, and text output only. Incoming media becomes a textual placeholder and is not downloaded or understood. It does not claim scientific validation, human reproduction, or safe unattended public deployment.
+This release supports one character, one local operator, and one OneBot account. Output remains text-only; inbound images are downloaded into a TTL-bounded media cache and understood natively or through the Vision Agent, while audio, video, and files stay textual placeholders. It does not claim scientific validation, human reproduction, or safe unattended public deployment.
 
 ## License
 

@@ -1,35 +1,35 @@
-# MoonanBot v0.0.1-rc.6
+# MoonanBot v0.0.1-rc.7
 
-This release candidate reworks the Simulation Agent's action surface: the phone becomes an explicit four-state machine, every message carries a current action menu, and the character learns to wait for replies.
+This release candidate gives the character sight: inbound QQ images are downloaded the moment they are observed, understood through a dual path keyed by each model's real capability, and described once for models that cannot see.
 
-The agent used to expose two tools: `list_available_actions` to discover what the phone state permits, and `perform_action` to act. Discovery cost a full model round trip, its answer could be stale by the next call, and a rejected action told the model what failed but not what it could do instead. The discovery tool is gone: every world-event message and every action result — errors included — now ends with the currently available actions, rendered from the same state machine that validates execution (ADR-0007). The menu can never be stale or skipped, and narration and validation cannot drift apart.
+Images used to become a `[图片：file]` placeholder and nothing else. Now every consumer resolves its Image Input Capability at render time — from the pi-ai catalog's `model.input`, or from the new per-slot `forceImageInput` override when a catalog under-declares. Image-capable consumers receive the real image content inline, newest-first, capped by `media.maxInjectedImages` (default 10); overflow degrades to description text with a note. Image-blind consumers receive `[图片：description]` text produced by the new Vision Agent, generated lazily on first need and cached permanently on the media row, so one image is described at most once no matter how many blind consumers or restarts follow (ADR-0008).
 
-The phone now moves through Closed → Home → Contact List → Chat. `view_contacts` opens the contact list with unread counts and folds long lists (entries with unread messages are always shown); `open_chat` is only reachable from the contact list and only for known contacts or groups; entering a chat marks it fully read and stores a Reading Cursor so `load_history` can page further upward without losing its place. `idle` and `sleep` close the phone, and `set_contact_importance` is restricted to the contact list or that friend's own private chat.
+The Vision Agent is the third mind beside Simulation and Synthesis: its own provider, model, thinking level, and an editable, versioned system prompt with no required placeholders. Its calls appear in the Activity page as `vision` runs with traces, and the prompt travels in character export/import — bundles without it stay importable.
 
-`wait_messages` is the third Terminating Action (ADR-0006 revised). In an open chat the character can watch the conversation for 1–5 new messages (bounded by a timeout, 180 s by default) or simply wait for 5–60 seconds; the run ends in the new `waiting` mode with the chat kept open. Any notification-level message from any conversation ends the wait early, and the wake text merges the notification with whatever accumulated in the watched chat; elapsed time or a reached count wakes the character with a summary of what arrived. An operator wake cancels the wait and merges the new messages the same way.
+Because QQ image URLs expire quickly, bytes are downloaded at observation time: segment URL first, the OneBot `get_image` API as fallback, with the format decided by magic bytes (jpeg/png/gif/webp/bmp), two concurrent downloads, and failures degrading to placeholders instead of breaking renders. Bytes live in the SQLite `message_media` table under a TTL (`media.byteTtlDays`, default 7) and are purged daily while descriptions survive; pending downloads re-enqueue after a restart. Bytes are part of full database backups — size them accordingly.
 
-Group messages that @ the character — `@all` included — now notify by the sender's Message Importance using the private-message signal mapping, so an @ from a Priority friend rings instead of being silenced by the group rule. Platform echoes of the character's own messages are dropped before storage: they are never re-observed as incoming, never notify, and never count toward waits.
+Persisted agent state never carries base64: image blocks are replaced with `[图片]` markers when a run ends, and the archive threshold estimates a flat 1500 tokens per image block. The new validated settings group `media` (`enabled`, `downloadTimeoutMs`, `byteTtlDays`, `maxInjectedImages`) has its own WebUI card. Readiness gained non-blocking warnings — a blind model with no usable Vision Agent surfaces on the Overview page but never prevents start.
 
-The simulation system prompt moves to 0.0.2 with an exact-match migration: an untouched 0.0.1 default template is replaced on upgrade, a customised template is preserved as-is. New settings bound waits and the contact list (`waitMinSeconds`, `waitMaxSeconds`, `waitMinMessages`, `waitMaxMessages`, `waitMessageTimeoutSeconds`, `contactListMaxEntries`); `chatPreviewMessages` (10) and `historyMaxMessages` (50) defaults shrink, while existing databases keep their stored values. The WebUI localises the new `waiting` mode and Contact List state and exposes the new bounds. Agent traces no longer record every user message twice.
+In the WebUI, the Agents page becomes three tabs; model dropdowns mark image-capable models with 🖼, a capability pill states whether the selected model sees images natively or by force, and the force toggle appears exactly when the catalog says text-only. Activity labels `vision` runs, and providers now expose each model's input modalities through the API.
 
-Upgrading from RC.5 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database. Pending idle/alarm timers survive the upgrade; `wait` timers appear only once the character uses `wait_messages`.
+Upgrading from RC.6 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database. The schema change is additive (`message_media`), settings normalize without migration, and the vision slot starts unconfigured — until it is configured (or a blind slot is forced), blind consumers keep seeing the old placeholders.
 
-The release still supports one character, one operator, one OneBot account, and text sending. Incoming media is represented only as text placeholders.
+The release still supports one character, one operator, and one OneBot account, and still sends text only. Audio, video, files, and unsupported segments remain textual placeholders and are not downloaded.
 
 ---
 
-这是 MoonanBot v0.0.1 的第六个候选版本，重做了推演 Agent 的动作面：手机成为显式的四态状态机，每条消息都附带当前可用的动作清单，角色学会了等待回复。
+这是 MoonanBot v0.0.1 的第七个候选版本，让角色拥有了视觉：入站 QQ 图片在观测瞬间即被下载，按每个模型的真实能力走双通道理解，且对看不见图的模型只描述一次、永久缓存。
 
-Agent 过去暴露两个工具：`list_available_actions` 查询手机状态允许哪些动作，`perform_action` 执行。查询要花掉一次完整的模型往返，答案在下次调用前就可能过期，动作被拒绝时模型只知道失败原因、不知道还能做什么。现在查询工具已删除：每条世界事件消息和每次动作结果（包括错误）都以「接下来可用的动作」清单收尾，清单由验证执行的同一个状态机渲染（ADR-0007）。菜单不会过期、不会被跳过查询，叙述与校验永不脱节。
+图片过去只会变成 `[图片：file]` 占位符。现在每个消费者在渲染时解析自己的图片输入能力——以 pi-ai 目录的 `model.input` 为准，目录漏报时可以用新的按槽位 `forceImageInput` 强制覆盖。支持图片输入的消费者直接收到原图内容，按时间倒序、受 `media.maxInjectedImages`（默认 10）限制；超出上限的图片降级为文字描述并附注说明。不支持图片的消费者收到 `[图片：描述]` 文本，由新的图片识别 Agent 在首次需要时惰性生成，并永久缓存在媒体行上——无论多少盲模型消费者、无论重启多少次，一张图最多描述一次（ADR-0008）。
 
-手机现在按 关闭 → 主页 → 好友和群聊列表 → 聊天窗口 四态流转。`view_contacts` 打开联系人列表，显示未读数并折叠长列表（有未读消息的条目始终显示）；`open_chat` 只能在联系人列表中执行，且目标必须是已知联系人或群聊；进入聊天窗口会将其全部标记为已读，并保存阅读游标，`load_history` 借此继续向上翻页而不丢失位置。`idle` 与 `sleep` 会关闭手机；`set_contact_importance` 仅限在联系人列表或该好友自己的私聊窗口中执行。
+图片识别 Agent 是与推演、归纳并列的第三个心智：独立的提供商、模型、思考等级，以及可编辑、带版本的系统提示词（无必需占位符）。它的调用以 `vision` 运行出现在活动页并带完整轨迹；提示词随角色包导出/导入，不含它的旧角色包仍可导入。
 
-`wait_messages` 是第三个终止动作（ADR-0006 已相应修订）。在打开的聊天窗口中，角色可以等待该会话出现 1–5 条新消息（受超时限制，默认 180 秒），或单纯等待 5–60 秒；本轮以新的 `waiting` 模式结束，聊天窗口保持打开。任何会话中达到通知级别的消息都会提前结束等待，唤醒文案会把通知与被盯会话累积的新消息合并呈现；到时或计数达成同样唤醒，并附上到达内容的概要。操作员唤醒会取消等待，并以同样方式合并新消息。
+QQ 图片 URL 过期很快，因此字节在观测时立即下载：优先分段 URL，失败回退 OneBot `get_image` API，格式由 magic bytes 判定（jpeg/png/gif/webp/bmp），并发上限 2，任何失败都降级为占位符而不影响渲染。字节存于 SQLite 新表 `message_media`，按 TTL（`media.byteTtlDays`，默认 7 天）每日清理，描述永久保留；重启后未完成的下载自动续传。字节会计入完整数据库备份的体积，请据此规划。
 
-@ 角色（含 `@all`）的群聊消息现在按发送者的 Message Importance 走私聊信号映射来通知：Priority 好友的 @ 会响铃，而不是被群聊规则静默。角色自己消息的平台回显在入库前被丢弃：不再被二次观测为来信、不触发通知、也不计入等待。
+持久化的 Agent 状态永不携带 base64：运行结束时图片块被替换为 `[图片]` 标记，归档阈值按每张图固定 1500 token 估算。新增经过校验的 `media` 设置组（`enabled`、`downloadTimeoutMs`、`byteTtlDays`、`maxInjectedImages`），WebUI 有独立卡片。就绪检查新增非阻塞警告——盲模型没有可用的图片识别 Agent 时会在总览页提示，但绝不阻止启动。
 
-推演系统提示词升级到 0.0.2，并带精确匹配迁移：升级时未改动过的 0.0.1 默认模板会被替换，自定义过的模板原样保留。新增设置约束等待与联系人列表（`waitMinSeconds`、`waitMaxSeconds`、`waitMinMessages`、`waitMaxMessages`、`waitMessageTimeoutSeconds`、`contactListMaxEntries`）；`chatPreviewMessages`（10）与 `historyMaxMessages`（50）默认值调小，已有数据库保留其存储值。WebUI 本地化了新的 `waiting` 模式与联系人列表状态，并暴露新的边界设置。Agent 轨迹不再把每条用户消息重复记录两次。
+WebUI 的 Agents 页变为三个标签；模型下拉为支持图片的模型加 🖼 标记，能力 Pill 说明当前模型是原生支持还是被强制启用，强制开关只在目录声明纯文本时出现。活动页标注 `vision` 运行，提供商 API 暴露每个模型的输入模态。
 
-从 RC.5 升级会保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。待触发的 idle/alarm 定时器不受影响；`wait` 定时器只会在角色使用 `wait_messages` 后出现。
+从 RC.6 升级保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。表结构变更为纯新增（`message_media`），设置无需迁移即可归一化；图片识别槽位初始未配置——在配置它（或强制某个盲槽位）之前，盲模型消费者仍看到旧占位符。
 
-本版本仍只支持单角色、单操作者、单 OneBot 账号和纯文本发送，媒体仅转为文字占位。
+本版本仍只支持单角色、单操作者、单 OneBot 账号，发送仍为纯文本；音频、视频、文件与不支持的分段仍只转为文字占位，不下载。

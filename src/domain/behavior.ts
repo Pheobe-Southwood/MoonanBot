@@ -146,3 +146,31 @@ export function estimateTokens(text: string): number {
   const nonAscii = text.length - ascii;
   return Math.ceil(ascii / 4 + nonAscii * 0.6);
 }
+
+/** Flat per-image budget used when estimating context size, so base64 payloads never reach the token math. */
+export const IMAGE_TOKEN_ESTIMATE = 1_500;
+
+/** Context-size estimate over agent messages that counts image blocks as a flat value instead of their base64 length. */
+export function estimateContextTokens(messages: unknown[]): number {
+  let total = 0;
+  for (const message of messages) {
+    const content = (message as { content?: unknown } | undefined)?.content;
+    if (typeof content === "string") { total += estimateTokens(content); continue; }
+    if (!Array.isArray(content)) continue;
+    for (const block of content as Array<{ type?: string; text?: string; thinking?: string; arguments?: unknown }>) {
+      if (block?.type === "image") total += IMAGE_TOKEN_ESTIMATE;
+      else if (typeof block?.text === "string") total += estimateTokens(block.text);
+      else if (typeof block?.thinking === "string") total += estimateTokens(block.thinking);
+      else if (block?.type === "toolCall") total += estimateTokens(JSON.stringify(block.arguments ?? {}));
+    }
+  }
+  return total;
+}
+
+/** Effective image capability of one agent slot: the model's catalog modalities or the operator's per-slot override. */
+export function supportsImageInput(
+  model: { input?: readonly string[] } | undefined,
+  selection: { forceImageInput?: boolean } | undefined,
+): boolean {
+  return (model?.input?.includes("image") ?? false) || selection?.forceImageInput === true;
+}

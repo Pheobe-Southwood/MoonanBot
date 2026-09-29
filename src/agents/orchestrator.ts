@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
-import type { AssistantMessage, Message, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { archiveThreshold, estimateTokens, formatAvailableActions, formatObservedMessages, listAvailableActions, notificationFor, segmentsMention } from "../domain/behavior.js";
+import type { AssistantMessage, ImageContent, Message, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
+import { archiveThreshold, estimateContextTokens, formatAvailableActions, listAvailableActions, notificationFor, segmentsMention } from "../domain/behavior.js";
 import type { AgentSelection, ConversationTarget, Importance, NotificationDecision, StoredMessage } from "../domain/types.js";
+import { MediaPipeline } from "../media/pipeline.js";
+import { renderMessagePreview, renderObservedMessages, renderSynthesisEvents, stripImageBlocks, type MediaView, type RenderedMessages } from "../media/render.js";
 import type { PlatformMessageEvent } from "../platforms/types.js";
 import type { ChatPlatformAdapter } from "../platforms/types.js";
 import type { ProviderRegistry } from "../providers/registry.js";
@@ -10,9 +12,12 @@ import type { MoonanDatabase, TimerRecord } from "../storage/database.js";
 import { renderPrompt } from "./prompts.js";
 import { buildSimulationTools } from "./simulation-tools.js";
 import { buildSynthesisTools } from "./synthesis-tools.js";
+import { currentCapabilities, describeMedia, effectiveSelection, formatWorld, selectionSeesImages } from "./vision.js";
 
-function userMessage(text: string): UserMessage {
-  return { role: "user", content: text, timestamp: Date.now() };
+function userMessage(text: string, images: ImageContent[] = []): UserMessage {
+  return images.length
+    ? { role: "user", content: [{ type: "text", text }, ...images], timestamp: Date.now() }
+    : { role: "user", content: text, timestamp: Date.now() };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -21,26 +26,6 @@ function sleep(ms: number): Promise<void> {
 
 function messageText(content: string | Array<{ type: string; text?: string }>): string {
   return typeof content === "string" ? content : content.filter((item) => item.type === "text").map((item) => item.text ?? "").join("");
-}
-
-function formatWorld(db: MoonanDatabase): Record<string, string> {
-  const profile = db.getProfile();
-  return {
-    botName: profile.name,
-    soul: profile.soul || "（尚未填写）",
-    environment: profile.environment || "（尚未填写）",
-    memory: JSON.stringify(db.listMemories(), null, 2),
-    relationships: JSON.stringify(db.listContacts(), null, 2),
-    groups: JSON.stringify(db.listGroups(), null, 2),
-  };
-}
-
-function resolveSelection(selection: AgentSelection, fallback: AgentSelection): AgentSelection {
-  return {
-    providerId: selection.providerId ?? fallback.providerId,
-    modelId: selection.modelId ?? fallback.modelId,
-    thinkingLevel: selection.thinkingLevel ?? fallback.thinkingLevel,
-  };
 }
 
 export class RuntimeOrchestrator {
@@ -52,17 +37,21 @@ export class RuntimeOrchestrator {
   private pendingSignal: "alarm" | "ring" | "vibration" | null = null;
   private synthesisPromise: Promise<void> | null = null;
   private stopped = false;
+  private readonly media: MediaPipeline;
 
   constructor(
     private readonly db: MoonanDatabase,
     private readonly providers: ProviderRegistry,
     private readonly platform: ChatPlatformAdapter,
     private readonly random: () => number = Math.random,
-  ) {}
+  ) {
+    this.media = new MediaPipeline(db, platform, () => db.getSettings().value, (item) => describeMedia(db, providers, item));
+  }
 
   start(): void {
     if (this.timerLoop) return;
     this.stopped = false;
+    this.media.start();
     this.timerLoop = setInterval(() => { void this.tick(); }, 1_000);
     void this.tick();
   }
@@ -71,23 +60,31 @@ export class RuntimeOrchestrator {
     this.stopped = true;
     if (this.timerLoop) clearInterval(this.timerLoop);
     if (this.notificationTimer) clearTimeout(this.notificationTimer);
+    this.media.close();
     this.simulationAgent?.abort();
     await this.simulationAgent?.waitForIdle().catch(() => undefined);
     await this.synthesisPromise?.catch(() => undefined);
   }
 
-  readiness(): { ready: boolean; problems: string[] } {
-    const settings = this.db.getSettings().value;
+  readiness(): { ready: boolean; problems: string[]; warnings: string[] } {
     const profile = this.db.getProfile();
     const problems: string[] = [];
     if (!profile.name.trim()) problems.push("角色名称不能为空");
     if (!profile.soul.trim()) problems.push("请先填写 SOUL");
     for (const agent of ["simulation", "synthesis"] as const) {
-      const selection = resolveSelection(settings.agents[agent], settings.agents.default);
+      const selection = effectiveSelection(this.db, agent);
       if (!selection.providerId || !selection.modelId) problems.push(`请为${agent === "simulation" ? "推演" : "归纳"} Agent 选择模型`);
       else if (!this.providers.models.getModel(selection.providerId, selection.modelId)) problems.push(`${agent} 模型不存在：${selection.providerId}/${selection.modelId}`);
     }
-    return { ready: problems.length === 0, problems };
+    const warnings: string[] = [];
+    const capabilities = currentCapabilities(this.db, this.providers);
+    if ((!capabilities.simulation || !capabilities.synthesis) && !capabilities.visionConfigured) {
+      warnings.push("图片识别 Agent 未配置模型：不支持图片输入的模型将只看到 [图片] 占位符");
+    }
+    if (capabilities.visionConfigured && !capabilities.visionSeesImages) {
+      warnings.push("图片识别 Agent 所选模型未声明图片输入且未强制启用，识别调用可能失败");
+    }
+    return { ready: problems.length === 0, problems, warnings };
   }
 
   async startBot(): Promise<void> {
@@ -108,9 +105,11 @@ export class RuntimeOrchestrator {
     const [wait] = this.db.listPendingTimers("wait");
     this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", nextWakeAt: null });
-    const text = wait ? this.waitMergeText(wait, "你被唤醒了，请决定下一步行动。") : "你被唤醒了，请决定下一步行动。";
-    this.db.addEvent("operator_wake", text, {});
-    await this.activate(text);
+    const merged = wait
+      ? await this.waitMergeText(wait, "你被唤醒了，请决定下一步行动。")
+      : { text: "你被唤醒了，请决定下一步行动。", images: [] as ImageContent[] };
+    this.db.addEvent("operator_wake", merged.text, {});
+    await this.activate(merged.text, false, merged.images);
   }
 
   setOutbound(enabled: boolean): void {
@@ -135,21 +134,22 @@ export class RuntimeOrchestrator {
       segments: event.segments, occurredAt: event.occurredAt, observedAt: Date.now(), deliveryStatus: "received", readAt: null,
     };
     if (!this.db.insertMessage(stored)) return;
+    this.media.ingest(stored);
     this.db.addEvent("message_observed", `${event.senderName}在${event.target.kind === "group" ? "群聊" : "私聊"}中发来：${event.content}`, {
-      target: event.target, senderId: event.senderId, messageId: event.platformMessageId,
+      target: event.target, senderId: event.senderId, messageId: event.platformMessageId, messageRowId: stored.id,
     }, event.occurredAt);
     const runtime = this.db.getRuntime();
     if (runtime.mode === "paused") return;
     const importance: Importance = existing?.importance ?? "normal";
     const mention = event.target.kind === "group" && segmentsMention(event.segments, runtime.activeSelfId);
     const decision = notificationFor(event.target.kind, importance, runtime.mode === "sleeping", this.random, this.db.getSettings().value.simulation.priorityWakeProbability, mention);
-    if (runtime.mode === "waiting") { this.advanceWait(event, decision); return; }
+    if (runtime.mode === "waiting") { void this.advanceWait(event, decision); return; }
     if (decision.signal === "none" || !decision.wakes) return;
     this.queueNotification(decision.signal);
   }
 
   /** While waiting: any notification-level message ends the wait early (q5+q22); silent visible messages in the watched chat count toward messageCount. */
-  private advanceWait(event: PlatformMessageEvent, decision: NotificationDecision): void {
+  private async advanceWait(event: PlatformMessageEvent, decision: NotificationDecision): Promise<void> {
     const [wait] = this.db.listPendingTimers("wait");
     if (decision.signal !== "none" && decision.wakes) { this.queueNotification(decision.signal); return; }
     if (!wait || !decision.visibleOnPhone || wait.payload.mode !== "count") return;
@@ -161,34 +161,60 @@ export class RuntimeOrchestrator {
     if (arrived < needed) return;
     this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", nextWakeAt: null });
-    const text = this.waitText(watch, since, `等待的 ${needed} 条新消息已到达。`);
-    this.db.addEvent("wait_elapsed", text, wait.payload);
-    void this.activate(text);
+    const merged = await this.waitText(watch, since, `等待的 ${needed} 条新消息已到达。`);
+    this.db.addEvent("wait_elapsed", merged.text, wait.payload);
+    await this.activate(merged.text, false, merged.images);
   }
 
-  private waitText(watch: ConversationTarget, since: number, head: string): string {
+  private simulationSeesImages(): boolean {
+    return selectionSeesImages(this.providers, effectiveSelection(this.db, "simulation"));
+  }
+
+  private async renderForSimulation(messages: StoredMessage[]): Promise<RenderedMessages> {
+    return renderObservedMessages(this.db, this.media, messages, {
+      seesImages: this.simulationSeesImages(),
+      describeLazily: true,
+    });
+  }
+
+  private mediaView(): MediaView {
+    return {
+      seesImages: () => this.simulationSeesImages(),
+      render: (messages, options) => renderObservedMessages(this.db, this.media, messages, {
+        seesImages: this.simulationSeesImages(),
+        describeLazily: options?.describeLazily ?? false,
+      }),
+      preview: (message) => renderMessagePreview(this.db, message),
+    };
+  }
+
+  private async waitText(watch: ConversationTarget, since: number, head: string): Promise<{ text: string; images: ImageContent[] }> {
     const profile = this.db.getProfile();
     const messages = this.db.listMessagesSince(watch, since);
     const otherUnread = this.db.unreadSummary(false)
       .filter((item) => !(item.target.kind === watch.kind && item.target.id === watch.id))
       .reduce((sum, item) => sum + item.count, 0);
-    return [
+    const rendered = await this.renderForSimulation(messages);
+    const text = [
       head,
       `等待期间${watch.name ?? watch.id}的新消息：`,
-      messages.length ? formatObservedMessages(messages) : "没有新消息。",
+      messages.length ? rendered.text : "没有新消息。",
       `${profile.name}的其他好友/群聊存在 ${otherUnread} 条未读消息。`,
     ].join("\n");
+    return { text, images: rendered.images };
   }
 
-  private waitMergeText(wait: TimerRecord, head: string): string {
+  private async waitMergeText(wait: TimerRecord, head: string): Promise<{ text: string; images: ImageContent[] }> {
     const watch = wait.payload.watch as ConversationTarget | undefined;
-    return watch ? this.waitText(watch, Number(wait.payload.since ?? wait.dueAt), head) : head;
+    return watch
+      ? this.waitText(watch, Number(wait.payload.since ?? wait.dueAt), head)
+      : Promise.resolve({ text: head, images: [] as ImageContent[] });
   }
 
-  private waitElapsedText(timer: TimerRecord): string {
+  private async waitElapsedText(timer: TimerRecord): Promise<{ text: string; images: ImageContent[] }> {
     const watch = timer.payload.watch as ConversationTarget | undefined;
     const since = Number(timer.payload.since ?? timer.dueAt);
-    if (!watch) return "等待结束，请决定下一步行动。";
+    if (!watch) return { text: "等待结束，请决定下一步行动。", images: [] };
     if (timer.payload.mode === "count") {
       const needed = Number(timer.payload.count ?? 1);
       const arrived = this.db.listMessagesSince(watch, since).length;
@@ -209,17 +235,22 @@ export class RuntimeOrchestrator {
       const selected = this.pendingSignal;
       this.pendingSignal = null;
       if (!selected) return;
-      let text = selected === "alarm" ? "手机闹钟响了" : selected === "ring" ? "手机响了" : "手机振动了";
-      const type = selected === "alarm" ? "phone_alarm" : selected === "ring" ? "phone_ring" : "phone_vibration";
-      const [wait] = this.db.listPendingTimers("wait");
-      if (wait) {
-        this.db.cancelPendingTimers("wait");
-        text = this.waitMergeText(wait, text);
-      }
-      this.db.addEvent(type, text, {});
-      const mode = this.db.getRuntime().mode;
-      if (mode === "sleeping" || mode === "waiting") this.db.setRuntime({ mode: "awake", nextWakeAt: null });
-      void this.activate(text, selected !== "vibration");
+      void (async () => {
+        let text = selected === "alarm" ? "手机闹钟响了" : selected === "ring" ? "手机响了" : "手机振动了";
+        const type = selected === "alarm" ? "phone_alarm" : selected === "ring" ? "phone_ring" : "phone_vibration";
+        let images: ImageContent[] = [];
+        const [wait] = this.db.listPendingTimers("wait");
+        if (wait) {
+          this.db.cancelPendingTimers("wait");
+          const merged = await this.waitMergeText(wait, text);
+          text = merged.text;
+          images = merged.images;
+        }
+        this.db.addEvent(type, text, {});
+        const mode = this.db.getRuntime().mode;
+        if (mode === "sleeping" || mode === "waiting") this.db.setRuntime({ mode: "awake", nextWakeAt: null });
+        await this.activate(text, selected !== "vibration", images);
+      })();
     }, this.db.getSettings().value.simulation.notificationWindowMs);
   }
 
@@ -228,10 +259,10 @@ export class RuntimeOrchestrator {
     for (const timer of this.db.claimDueTimers()) {
       const wasPaused = this.db.getRuntime().mode === "paused";
       if (timer.kind === "wait") {
-        const text = this.waitElapsedText(timer);
+        const merged = await this.waitElapsedText(timer);
         this.db.setRuntime({ ...(wasPaused ? {} : { mode: "awake" as const }), nextWakeAt: null });
-        this.db.addEvent("wait_elapsed", text, timer.payload, timer.dueAt);
-        if (!wasPaused) await this.activate(text);
+        this.db.addEvent("wait_elapsed", merged.text, timer.payload, timer.dueAt);
+        if (!wasPaused) await this.activate(merged.text, false, merged.images);
         continue;
       }
       const isAlarm = timer.kind === "alarm";
@@ -243,8 +274,7 @@ export class RuntimeOrchestrator {
   }
 
   private selectedModel(agent: "simulation" | "synthesis"): { model: Model<any>; thinkingLevel: AgentSelection["thinkingLevel"] } {
-    const config = this.db.getSettings().value.agents;
-    const selected = resolveSelection(config[agent], config.default);
+    const selected = effectiveSelection(this.db, agent);
     const model = selected.providerId && selected.modelId ? this.providers.models.getModel(selected.providerId, selected.modelId) : undefined;
     if (!model) throw new Error(`${agent}_model_not_configured`);
     return { model, thinkingLevel: selected.thinkingLevel };
@@ -254,7 +284,7 @@ export class RuntimeOrchestrator {
     const selected = this.selectedModel("simulation");
     const prompt = renderPrompt(this.db.getPrompt("simulation").template, formatWorld(this.db));
     if (!this.simulationAgent) {
-      const tools = buildSimulationTools(this.db, this.platform);
+      const tools = buildSimulationTools(this.db, this.platform, this.mediaView());
       this.simulationAgent = new Agent({
         initialState: {
           systemPrompt: prompt, model: selected.model, thinkingLevel: selected.thinkingLevel,
@@ -269,13 +299,13 @@ export class RuntimeOrchestrator {
       this.simulationAgent.subscribe((event) => {
         if (event.type === "tool_execution_end" && event.toolName === "perform_action") this.simulationActionCalls += 1;
         if (event.type === "message_end" && this.simulationRunId) this.traceMessage(this.simulationRunId, event.message, "simulation");
-        if (event.type === "agent_end") this.db.setAgentState("simulation", event.messages);
+        if (event.type === "agent_end") this.db.setAgentState("simulation", stripImageBlocks(event.messages));
       });
     }
     this.simulationAgent.state.systemPrompt = prompt;
     this.simulationAgent.state.model = selected.model;
     this.simulationAgent.state.thinkingLevel = selected.thinkingLevel;
-    this.simulationAgent.state.tools = buildSimulationTools(this.db, this.platform);
+    this.simulationAgent.state.tools = buildSimulationTools(this.db, this.platform, this.mediaView());
     return this.simulationAgent;
   }
 
@@ -284,7 +314,7 @@ export class RuntimeOrchestrator {
     return this.db.getRuntime().mode === "awake";
   }
 
-  async activate(text: string, urgent = false): Promise<void> {
+  async activate(text: string, urgent = false, images: ImageContent[] = []): Promise<void> {
     if (this.db.getRuntime().mode === "paused") return;
     const message = `${text}\n\n${formatAvailableActions(listAvailableActions(this.db.getRuntime()))}`;
     let agent: Agent;
@@ -294,15 +324,17 @@ export class RuntimeOrchestrator {
       return;
     }
     if (agent.state.isStreaming) {
-      if (urgent) agent.steer(userMessage(message));
-      else agent.followUp(userMessage(message));
+      const steering = userMessage(message, images);
+      if (urgent) agent.steer(steering);
+      else agent.followUp(steering);
       return;
     }
     const runId = this.db.beginAgentRun("simulation", text);
     this.simulationRunId = runId;
     this.simulationActionCalls = 0;
     try {
-      await agent.prompt(message);
+      if (images.length) await agent.prompt(message, images);
+      else await agent.prompt(message);
       const settings = this.db.getSettings().value;
       for (let attempt = 0; this.needsContinuation() && attempt < settings.simulation.missingActionRetries; attempt += 1) {
         const name = this.db.getProfile().name;
@@ -326,7 +358,7 @@ export class RuntimeOrchestrator {
         selectedContext(agent.state.model),
         settings.simulation.contextModelRatio,
       );
-      if (estimateTokens(JSON.stringify(agent.state.messages)) >= threshold) void this.scheduleSynthesis("context_threshold");
+      if (estimateContextTokens(agent.state.messages) >= threshold) void this.scheduleSynthesis("context_threshold");
     } catch (error) {
       const problem = error instanceof Error ? error.message : String(error);
       this.db.endAgentRun(runId, "failed", { input: 0, output: 0 }, problem);
@@ -348,6 +380,8 @@ export class RuntimeOrchestrator {
     const events = this.db.eventsSince(start, end);
     const batchId = this.db.createSynthesisBatch(start, end);
     const config = this.db.getSettings().value;
+    const synthesisSeesImages = selectionSeesImages(this.providers, effectiveSelection(this.db, "synthesis"));
+    const rendered = await renderSynthesisEvents(this.db, this.media, events, synthesisSeesImages);
     let lastError = "";
     for (let attempt = 1; attempt <= config.synthesis.retryCount; attempt += 1) {
       const runId = this.db.beginAgentRun("synthesis", trigger);
@@ -365,8 +399,9 @@ export class RuntimeOrchestrator {
           if (event.type === "message_end") this.traceMessage(runId, event.message, "synthesis");
         });
         const period = `${new Date(start).toISOString()} 至 ${new Date(end).toISOString()}`;
-        const input = `过去 ${period} 经历的事件：\n${events.length ? events.map((event) => `[${new Date(event.occurredAt).toISOString()}] ${event.text}`).join("\n") : "没有外部消息或其他已记录事件。"}\n请利用工具修改记忆和关系网，并调用 finish_synthesis。`;
-        await agent.prompt(input);
+        const input = `过去 ${period} 经历的事件：\n${events.length ? rendered.lines.join("\n") : "没有外部消息或其他已记录事件。"}\n请利用工具修改记忆和关系网，并调用 finish_synthesis。`;
+        if (rendered.images.length) await agent.prompt(input, rendered.images);
+        else await agent.prompt(input);
         staging.commit();
         const usage = this.usage(agent.state.messages);
         this.db.endAgentRun(runId, "completed", usage);
@@ -392,7 +427,7 @@ export class RuntimeOrchestrator {
     while (recent[0]?.role === "toolResult") recent = recent.slice(1);
     const handoff = userMessage("更久远的行为已归纳进长期记忆，以当前记忆为准。");
     const next = [handoff, ...recent];
-    this.db.setAgentState("simulation", next);
+    this.db.setAgentState("simulation", stripImageBlocks(next));
     if (this.simulationAgent) this.simulationAgent.state.messages = next;
   }
 

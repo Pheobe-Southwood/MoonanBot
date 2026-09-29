@@ -5,6 +5,7 @@ import { Agent } from "@earendil-works/pi-agent-core";
 import { Type, type AssistantMessage } from "@earendil-works/pi-ai";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildSimulationTools } from "../../src/agents/simulation-tools.js";
+import { stubMediaView } from "../helpers.js";
 import { buildSynthesisTools } from "../../src/agents/synthesis-tools.js";
 import type { ChatPlatformAdapter } from "../../src/platforms/types.js";
 import { ProviderRegistry } from "../../src/providers/registry.js";
@@ -89,7 +90,7 @@ suite.sequential("DeepSeek live integration", () => {
     const simulation = new Agent({
       initialState: {
         systemPrompt: "你控制一个角色。必须使用工具实际行动。先查询动作，然后睡觉并设置30分钟闹钟。",
-        model, tools: buildSimulationTools(db, platform()), thinkingLevel: "medium",
+        model, tools: buildSimulationTools(db, platform(), stubMediaView(db)), thinkingLevel: "medium",
       },
       streamFn: providers.models.streamSimple.bind(providers.models), toolExecution: "sequential", sessionId: "moonan-live-simulation",
     });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { archiveThreshold, formatAvailableActions, listAvailableActions, notificationFor, segmentsMention, validateDuration, validateWait } from "../src/domain/behavior.js";
+import { archiveThreshold, estimateContextTokens, formatAvailableActions, listAvailableActions, notificationFor, segmentsMention, supportsImageInput, validateDuration, validateWait } from "../src/domain/behavior.js";
 import { defaultRuntime, defaultSettings } from "../src/domain/defaults.js";
+import { assertValidSettings, normalizeSettings } from "../src/domain/settings.js";
 import type { PhoneState, RuntimeState } from "../src/domain/types.js";
 
 function withPhone(runtime: RuntimeState, phone: PhoneState): RuntimeState {
@@ -95,5 +96,43 @@ describe("behavior domain", () => {
     expect(archiveThreshold(272_000, 128_000)).toBe(102_400);
     expect(archiveThreshold(272_000, 100_000, 0.7)).toBe(70_000);
     expect(() => archiveThreshold(1, 1, 2)).toThrow(/比例/);
+  });
+
+  it("treats catalog modalities or the per-slot override as image capability", () => {
+    expect(supportsImageInput({ input: ["text", "image"] }, {})).toBe(true);
+    expect(supportsImageInput({ input: ["text"] }, {})).toBe(false);
+    expect(supportsImageInput({ input: ["text"] }, { forceImageInput: true })).toBe(true);
+    expect(supportsImageInput(undefined, { forceImageInput: true })).toBe(true);
+    expect(supportsImageInput(undefined, undefined)).toBe(false);
+  });
+
+  it("estimates context tokens with a flat per-image budget instead of base64 length", () => {
+    const base64 = "A".repeat(200_000);
+    const withImage = estimateContextTokens([
+      { role: "user", content: [{ type: "text", text: "看图" }, { type: "image", data: base64, mimeType: "image/png" }] },
+    ]);
+    expect(withImage).toBeLessThan(2_000);
+    expect(withImage).toBeGreaterThan(1_500);
+    const textOnly = estimateContextTokens([{ role: "user", content: "看图" }]);
+    expect(textOnly).toBeLessThan(10);
+  });
+
+  it("normalizes legacy settings payloads into media and vision defaults", () => {
+    const legacy = { web: { port: 21314 }, agents: { default: { providerId: "p", modelId: "m", thinkingLevel: "high" } } };
+    const normalized = normalizeSettings(legacy);
+    expect(normalized.media).toEqual({ enabled: true, downloadTimeoutMs: 30_000, byteTtlDays: 7, maxInjectedImages: 10 });
+    expect(normalized.agents.vision).toEqual({ providerId: null, modelId: null, thinkingLevel: "medium", forceImageInput: false });
+    expect(normalized.agents.default).toMatchObject({ providerId: "p", modelId: "m", thinkingLevel: "high", forceImageInput: false });
+    expect(() => assertValidSettings(normalized)).not.toThrow();
+    expect(() => assertValidSettings({ ...normalized, media: { ...normalized.media, byteTtlDays: 0 } })).toThrow("invalid_media_ttl");
+    expect(() => assertValidSettings({ ...normalized, media: { ...normalized.media, maxInjectedImages: 0 } })).toThrow("invalid_media_image_limit");
+    expect(() => assertValidSettings({ ...normalized, media: { ...normalized.media, downloadTimeoutMs: 10 } })).toThrow("invalid_media_download_timeout");
+  });
+
+  it("defaults every settings slot including media and vision", () => {
+    const settings = defaultSettings("token");
+    expect(settings.agents.vision.forceImageInput).toBe(false);
+    expect(settings.media.byteTtlDays).toBe(7);
+    expect(() => assertValidSettings(settings)).not.toThrow();
   });
 });

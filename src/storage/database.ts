@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { defaultProfile, defaultRuntime, defaultSettings } from "../domain/defaults.js";
 import { normalizeSettings } from "../domain/settings.js";
 import type {
+  AgentKind,
   AgentRunSummary,
   AgentTraceMessage,
   AppSettings,
@@ -14,13 +15,14 @@ import type {
   GroupRecord,
   Importance,
   MemoryRecord,
+  MessageMedia,
   RuntimeState,
   SettingsEnvelope,
   StoredMessage,
   WorldEvent,
   WorldEventType,
 } from "../domain/types.js";
-import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT } from "../agents/prompts.js";
+import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, VISION_SYSTEM_PROMPT } from "../agents/prompts.js";
 
 type SqlValue = string | number | bigint | Uint8Array | null;
 
@@ -169,6 +171,25 @@ export class MoonanDatabase {
         UNIQUE(platform, platform_message_id, direction)
       );
       CREATE INDEX IF NOT EXISTS idx_messages_target ON messages(platform, target_kind, target_id, occurred_at DESC);
+      CREATE TABLE IF NOT EXISTS message_media (
+        id TEXT PRIMARY KEY,
+        message_id TEXT NOT NULL,
+        segment_index INTEGER NOT NULL,
+        kind TEXT NOT NULL DEFAULT 'image',
+        file_id TEXT NOT NULL,
+        url TEXT,
+        mime TEXT,
+        byte_size INTEGER NOT NULL DEFAULT 0,
+        bytes BLOB,
+        status TEXT NOT NULL,
+        error TEXT,
+        description TEXT,
+        described_at INTEGER,
+        fetched_at INTEGER,
+        purged_at INTEGER,
+        created_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_message_media_message ON message_media(message_id);
       CREATE TABLE IF NOT EXISTS event_records (
         id TEXT PRIMARY KEY,
         type TEXT NOT NULL,
@@ -295,7 +316,7 @@ export class MoonanDatabase {
       this.sqlite.prepare("INSERT INTO runtime_state(id,value_json,updated_at) VALUES(1,?,?)")
         .run(JSON.stringify(defaultRuntime(timestamp)), timestamp);
     }
-    for (const [agent, template] of [["simulation", SIMULATION_SYSTEM_PROMPT], ["synthesis", SYNTHESIS_SYSTEM_PROMPT]] as const) {
+    for (const [agent, template] of [["simulation", SIMULATION_SYSTEM_PROMPT], ["synthesis", SYNTHESIS_SYSTEM_PROMPT], ["vision", VISION_SYSTEM_PROMPT]] as const) {
       if (!this.sqlite.prepare("SELECT 1 FROM prompt_versions WHERE agent=? AND active=1").get(agent)) {
         this.sqlite.prepare("INSERT INTO prompt_versions(id,agent,template,active,created_at) VALUES(?,?,?,?,?)")
           .run(randomUUID(), agent, template, 1, timestamp);
@@ -481,6 +502,73 @@ export class MoonanDatabase {
     };
   }
 
+  getMessage(id: string): StoredMessage | undefined {
+    const row = this.sqlite.prepare("SELECT * FROM messages WHERE id=?").get(id) as any;
+    return row ? this.mapMessage(row) : undefined;
+  }
+
+  createMedia(input: { messageId: string; segmentIndex: number; fileId: string; url: string | null }): MessageMedia {
+    const id = randomUUID();
+    this.sqlite.prepare(`INSERT INTO message_media(id,message_id,segment_index,kind,file_id,url,status,created_at) VALUES(?,?,?,?,?,?,'pending',?)`)
+      .run(id, input.messageId, input.segmentIndex, "image", input.fileId, input.url, now());
+    return this.getMedia(id)!;
+  }
+
+  setMediaCached(id: string, value: { mime: string; bytes: Uint8Array }): void {
+    this.sqlite.prepare("UPDATE message_media SET status='cached',mime=?,bytes=?,byte_size=?,error=NULL,fetched_at=? WHERE id=?")
+      .run(value.mime, value.bytes, value.bytes.byteLength, now(), id);
+  }
+
+  setMediaFailed(id: string, error: string): void {
+    this.sqlite.prepare("UPDATE message_media SET status='failed',error=?,bytes=NULL,byte_size=0 WHERE id=?").run(error, id);
+  }
+
+  setMediaDescription(id: string, description: string): void {
+    this.sqlite.prepare("UPDATE message_media SET description=?,described_at=? WHERE id=?").run(description, now(), id);
+  }
+
+  getMedia(id: string): MessageMedia | undefined {
+    const row = this.sqlite.prepare("SELECT * FROM message_media WHERE id=?").get(id) as any;
+    return row ? this.mapMedia(row) : undefined;
+  }
+
+  /** Media rows for a batch of internal message ids, keyed by message id and ordered by segment index. */
+  listMediaForMessages(messageIds: string[]): Map<string, MessageMedia[]> {
+    const result = new Map<string, MessageMedia[]>();
+    const ids = [...new Set(messageIds.filter(Boolean))];
+    if (!ids.length) return result;
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.sqlite.prepare(`SELECT * FROM message_media WHERE message_id IN (${placeholders}) ORDER BY message_id,segment_index`).all(...ids) as any[];
+    for (const row of rows) {
+      const list = result.get(row.message_id) ?? [];
+      list.push(this.mapMedia(row));
+      result.set(row.message_id, list);
+    }
+    return result;
+  }
+
+  listPendingMedia(): MessageMedia[] {
+    return (this.sqlite.prepare("SELECT * FROM message_media WHERE status='pending' ORDER BY created_at").all() as any[]).map((row) => this.mapMedia(row));
+  }
+
+  /** TTL cleanup: drops cached bytes older than the cutoff while keeping descriptions forever. Returns rows purged. */
+  purgeExpiredMedia(cutoff: number): number {
+    return Number(this.sqlite.prepare("UPDATE message_media SET bytes=NULL,purged_at=? WHERE bytes IS NOT NULL AND created_at<?").run(now(), cutoff).changes);
+  }
+
+  private mapMedia(row: any): MessageMedia {
+    return {
+      id: row.id, messageId: row.message_id, segmentIndex: Number(row.segment_index), kind: "image",
+      fileId: row.file_id, url: row.url, mime: row.mime, byteSize: Number(row.byte_size),
+      bytes: row.bytes instanceof Uint8Array ? row.bytes : row.bytes ? new Uint8Array(row.bytes as ArrayBuffer) : null,
+      status: row.status as MessageMedia["status"], error: row.error,
+      description: row.description, describedAt: row.described_at === null ? null : Number(row.described_at),
+      fetchedAt: row.fetched_at === null ? null : Number(row.fetched_at),
+      purgedAt: row.purged_at === null ? null : Number(row.purged_at),
+      createdAt: Number(row.created_at),
+    };
+  }
+
   addEvent(type: WorldEventType, text: string, data: Record<string, unknown> = {}, occurredAt = now()): WorldEvent {
     const event: WorldEvent = { id: randomUUID(), type, text, data, occurredAt };
     this.sqlite.prepare("INSERT INTO event_records(id,type,occurred_at,text,data_json) VALUES(?,?,?,?,?)")
@@ -521,7 +609,7 @@ export class MoonanDatabase {
     return rows.map((row) => ({ id: row.id, kind: row.kind as TimerKind, dueAt: Number(row.due_at), payload: json(row.payload_json) }));
   }
 
-  beginAgentRun(agent: "simulation" | "synthesis", trigger: string): string {
+  beginAgentRun(agent: AgentKind, trigger: string): string {
     const id = randomUUID();
     this.sqlite.prepare("INSERT INTO agent_runs(id,agent,status,trigger,started_at) VALUES(?,?,?,?,?)")
       .run(id, agent, "running", trigger, now());
@@ -540,7 +628,7 @@ export class MoonanDatabase {
     return id;
   }
 
-  listAgentRuns(limit = 100, agent?: "simulation" | "synthesis"): AgentRunSummary[] {
+  listAgentRuns(limit = 100, agent?: AgentKind): AgentRunSummary[] {
     const rows = agent
       ? this.sqlite.prepare("SELECT * FROM agent_runs WHERE agent=? ORDER BY started_at DESC LIMIT ?").all(agent, limit)
       : this.sqlite.prepare("SELECT * FROM agent_runs ORDER BY started_at DESC LIMIT ?").all(limit);
@@ -569,12 +657,12 @@ export class MoonanDatabase {
       .run(agent, JSON.stringify(messages), now());
   }
 
-  getPrompt(agent: "simulation" | "synthesis"): { id: string; template: string; createdAt: number } {
+  getPrompt(agent: AgentKind): { id: string; template: string; createdAt: number } {
     const row = this.sqlite.prepare("SELECT id,template,created_at FROM prompt_versions WHERE agent=? AND active=1 ORDER BY created_at DESC LIMIT 1").get(agent) as any;
     return { id: row.id, template: row.template, createdAt: Number(row.created_at) };
   }
 
-  setPrompt(agent: "simulation" | "synthesis", template: string): ReturnType<MoonanDatabase["getPrompt"]> {
+  setPrompt(agent: AgentKind, template: string): ReturnType<MoonanDatabase["getPrompt"]> {
     return this.transaction(() => {
       this.sqlite.prepare("UPDATE prompt_versions SET active=0 WHERE agent=?").run(agent);
       this.sqlite.prepare("INSERT INTO prompt_versions(id,agent,template,active,created_at) VALUES(?,?,?,?,?)")
@@ -583,7 +671,7 @@ export class MoonanDatabase {
     });
   }
 
-  listPromptVersions(agent: "simulation" | "synthesis"): Array<{ id: string; template: string; active: boolean; createdAt: number }> {
+  listPromptVersions(agent: AgentKind): Array<{ id: string; template: string; active: boolean; createdAt: number }> {
     return (this.sqlite.prepare("SELECT * FROM prompt_versions WHERE agent=? ORDER BY created_at DESC").all(agent) as any[])
       .map((row) => ({ id: row.id, template: row.template, active: Boolean(row.active), createdAt: Number(row.created_at) }));
   }
@@ -671,7 +759,7 @@ export class MoonanDatabase {
   }
 
   getStats(): Record<string, number> {
-    const names = ["memories", "contacts", "chat_groups", "messages", "event_records", "agent_runs", "agent_messages"];
+    const names = ["memories", "contacts", "chat_groups", "messages", "message_media", "event_records", "agent_runs", "agent_messages"];
     return Object.fromEntries(names.map((name) => {
       const row = this.sqlite.prepare(`SELECT COUNT(*) AS count FROM ${name}`).get() as any;
       return [name, Number(row.count)];
@@ -686,7 +774,7 @@ export class MoonanDatabase {
       memories: this.listMemories(),
       contacts: this.listContacts(),
       groups: this.listGroups(),
-      prompts: { simulation: this.getPrompt("simulation").template, synthesis: this.getPrompt("synthesis").template },
+      prompts: { simulation: this.getPrompt("simulation").template, synthesis: this.getPrompt("synthesis").template, vision: this.getPrompt("vision").template },
     };
   }
 

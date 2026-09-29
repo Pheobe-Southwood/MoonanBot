@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { AppSettings, ConversationTarget, OneBotRole } from "../domain/types.js";
 import type { MoonanDatabase } from "../storage/database.js";
-import type { ChatPlatformAdapter, PlatformMessageEvent, PlatformStatus, RosterSyncSummary, SendResult } from "./types.js";
+import type { ChatPlatformAdapter, PlatformFilePayload, PlatformMessageEvent, PlatformStatus, RosterSyncSummary, SendResult } from "./types.js";
 
 type Role = OneBotRole;
 
@@ -73,23 +73,26 @@ function normalizeRole(raw: string | undefined): Role | null {
   return (ROLES as readonly string[]).includes(value) ? value as Role : null;
 }
 
+/** Canonical text form of one message segment; image segments keep the `[图片：file]` placeholder. */
+export function segmentText(segment: any): string {
+  const type = typeof segment?.type === "string" ? segment.type : "unknown";
+  const data = segment?.data && typeof segment.data === "object" ? segment.data : {};
+  switch (type) {
+    case "text": return String(data.text ?? "");
+    case "at": return data.qq === "all" ? "[@全体成员]" : `[@${String(data.qq ?? "未知")}]`;
+    case "reply": return `[回复消息 ${String(data.id ?? "未知")}]`;
+    case "image": return `[图片${data.file ? `：${String(data.file)}` : ""}]`;
+    case "record": return "[语音]";
+    case "video": return "[视频]";
+    case "file": return `[文件${data.name ? `：${String(data.name)}` : ""}]`;
+    case "face": return `[表情 ${String(data.id ?? "")}]`;
+    default: return `[${type}消息]`;
+  }
+}
+
 function plainText(segments: unknown): { text: string; normalized: unknown[] } {
   const list = Array.isArray(segments) ? segments : typeof segments === "string" ? [{ type: "text", data: { text: segments } }] : [];
-  const parts = list.map((segment: any) => {
-    const type = typeof segment?.type === "string" ? segment.type : "unknown";
-    const data = segment?.data && typeof segment.data === "object" ? segment.data : {};
-    switch (type) {
-      case "text": return String(data.text ?? "");
-      case "at": return data.qq === "all" ? "[@全体成员]" : `[@${String(data.qq ?? "未知")}]`;
-      case "reply": return `[回复消息 ${String(data.id ?? "未知")}]`;
-      case "image": return `[图片${data.file ? `：${String(data.file)}` : ""}]`;
-      case "record": return "[语音]";
-      case "video": return "[视频]";
-      case "file": return `[文件${data.name ? `：${String(data.name)}` : ""}]`;
-      case "face": return `[表情 ${String(data.id ?? "")}]`;
-      default: return `[${type}消息]`;
-    }
-  });
+  const parts = list.map(segmentText);
   return { text: parts.join("").trim() || "[空消息]", normalized: list };
 }
 
@@ -360,6 +363,18 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
     const key = target.kind === "group" ? "group_id" : "user_id";
     const data = await this.call(action, { [key]: Number.isSafeInteger(Number(target.id)) ? Number(target.id) : target.id, message: [{ type: "text", data: { text } }] }, signal);
     return { platformMessageId: data?.message_id === undefined ? null : String(data.message_id) };
+  }
+
+  /** OneBot v11 `get_image`: resolves a cached image file id to a fresh URL or an inline base64 payload. */
+  async fetchFile(fileId: string, signal?: AbortSignal): Promise<PlatformFilePayload | null> {
+    if (!this.apiConnection()) return null;
+    const data = await this.call("get_image", { file: fileId }, signal) as { base64?: unknown; url?: unknown; file?: unknown } | null;
+    if (!data) return null;
+    const base64 = typeof data.base64 === "string" && data.base64 ? data.base64 : null;
+    const url = typeof data.url === "string" && data.url.startsWith("http") ? data.url
+      : typeof data.file === "string" && data.file.startsWith("http") ? data.file : null;
+    if (!base64 && !url) return null;
+    return { base64, url };
   }
 
   async syncRoster(): Promise<RosterSyncSummary> {
