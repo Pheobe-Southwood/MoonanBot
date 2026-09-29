@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -31,7 +31,11 @@ async function login(app: MoonanApp): Promise<string> {
 describe("Web API", () => {
   it("keeps health public and requires password sessions everywhere else", async () => {
     const app = await fixture();
-    expect((await app.server.inject({ method: "GET", url: "/api/v1/health" })).statusCode).toBe(200);
+    const healthResponse = await app.server.inject({ method: "GET", url: "/api/v1/health" });
+    expect(healthResponse.statusCode).toBe(200);
+    const health = healthResponse.json();
+    expect(health.status).toBe("ok");
+    expect(health.version).toBe(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
     expect((await app.server.inject({ method: "GET", url: "/api/v1/runtime" })).statusCode).toBe(401);
     expect((await app.server.inject({ method: "POST", url: "/api/v1/auth/login", payload: { password: "wrong-password" } })).statusCode).toBe(401);
     const cookie = await login(app);
