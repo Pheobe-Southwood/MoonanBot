@@ -3,7 +3,7 @@ import type { ChatPlatformAdapter } from "../src/platforms/types.js";
 import { buildSimulationTools } from "../src/agents/simulation-tools.js";
 import { buildSynthesisTools } from "../src/agents/synthesis-tools.js";
 import type { ConversationTarget } from "../src/domain/types.js";
-import { testDatabase, textOf } from "./helpers.js";
+import { stubMediaView, testDatabase, textOf } from "./helpers.js";
 
 function platform(send: ChatPlatformAdapter["sendText"] = async () => ({ platformMessageId: "sent-1" })): ChatPlatformAdapter {
   return {
@@ -23,7 +23,7 @@ describe("simulation tools", () => {
   it("exposes only perform_action and appends the action menu to results and errors", async () => {
     const fixture = testDatabase();
     try {
-      const tools = buildSimulationTools(fixture.db, platform());
+      const tools = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
       expect(tools.map((tool) => tool.name)).toEqual(["perform_action"]);
       const opened = await execute(tools[0]!, { action: "open_phone" });
       expect(textOf(opened)).toContain("接下来可用的动作:");
@@ -36,7 +36,7 @@ describe("simulation tools", () => {
   it("independently rejects illegal phone operations and duration bounds", async () => {
     const fixture = testDatabase();
     try {
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
       await expect(execute(perform, { action: "idle", durationMinutes: 29 })).rejects.toThrow(/30/);
       await execute(perform!, { action: "open_phone" });
       const idled = await execute(perform!, { action: "idle", durationMinutes: 30 });
@@ -50,7 +50,7 @@ describe("simulation tools", () => {
   it("closes the phone when sleeping", async () => {
     const fixture = testDatabase();
     try {
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
       await execute(perform!, { action: "open_phone" });
       const sleeping = await execute(perform!, { action: "sleep", durationMinutes: 30 });
       expect(sleeping.terminate).toBe(true);
@@ -71,7 +71,7 @@ describe("simulation tools", () => {
           deliveryStatus: "received", readAt: null,
         });
       }
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
 
       const home = textOf(await execute(perform!, { action: "open_phone" }));
       expect(home).toContain("当前手机状态：主页");
@@ -123,7 +123,7 @@ describe("simulation tools", () => {
         senderId: "c", senderName: "User c", direction: "incoming", content: "unread me", segments: [],
         occurredAt: Date.now(), observedAt: Date.now(), deliveryStatus: "received", readAt: null,
       });
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
       await execute(perform!, { action: "open_phone" });
       const text = textOf(await execute(perform!, { action: "view_contacts" }));
       expect(text).toContain("User c");
@@ -140,7 +140,7 @@ describe("simulation tools", () => {
       const settings = fixture.db.getSettings();
       settings.value.simulation.messageIntervalMs = 0;
       fixture.db.updateSettings(settings.value, settings.version);
-      const [perform] = buildSimulationTools(fixture.db, platform(async (_target, text) => { sent.push(text); return { platformMessageId: `p-${sent.length}` }; }));
+      const [perform] = buildSimulationTools(fixture.db, platform(async (_target, text) => { sent.push(text); return { platformMessageId: `p-${sent.length}` }; }), stubMediaView(fixture.db));
       await execute(perform!, { action: "open_phone" });
       await execute(perform!, { action: "view_contacts" });
       await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
@@ -155,7 +155,7 @@ describe("simulation tools", () => {
     let calls = 0;
     try {
       fixture.db.upsertContact(seven);
-      const [perform] = buildSimulationTools(fixture.db, platform(async () => { calls += 1; throw new Error("link lost"); }));
+      const [perform] = buildSimulationTools(fixture.db, platform(async () => { calls += 1; throw new Error("link lost"); }), stubMediaView(fixture.db));
       await execute(perform!, { action: "open_phone" });
       await execute(perform!, { action: "view_contacts" });
       await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
@@ -169,7 +169,7 @@ describe("simulation tools", () => {
     const fixture = testDatabase();
     try {
       fixture.db.upsertContact(seven);
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
       await execute(perform!, { action: "open_phone" });
       await execute(perform!, { action: "view_contacts" });
       await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
@@ -182,7 +182,7 @@ describe("simulation tools", () => {
     const fixture = testDatabase();
     try {
       fixture.db.upsertContact(seven);
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
       await execute(perform!, { action: "open_phone" });
       await execute(perform!, { action: "view_contacts" });
       await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
@@ -217,7 +217,7 @@ describe("simulation tools", () => {
       fixture.db.upsertContact(seven);
       fixture.db.upsertContact({ platform: "onebot", id: "8", name: "Eight", aliases: [], summary: "", importance: "normal", isFriend: true });
       fixture.db.upsertGroup({ platform: "onebot", id: "g1", name: "Group", summary: "" });
-      const [perform] = buildSimulationTools(fixture.db, platform());
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
 
       await expect(execute(perform!, { action: "set_contact_importance", contactId: "7", importance: "priority" })).rejects.toThrow(/当前状态/);
       await execute(perform!, { action: "open_phone" });

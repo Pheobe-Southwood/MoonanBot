@@ -135,7 +135,7 @@ export interface ProviderView {
   name: string;
   baseUrl: string | null;
   auth: { apiKey: string | null; oauth: string | null; configured: boolean };
-  models: Array<{ id: string; name: string; contextWindow: number; maxTokens: number; reasoning: boolean; source: "catalog" | "remote" }>;
+  models: Array<{ id: string; name: string; contextWindow: number; maxTokens: number; reasoning: boolean; input: ("text" | "image")[]; source: "catalog" | "remote" }>;
   custom: boolean;
 }
 
@@ -180,7 +180,7 @@ export class ProviderRegistry {
         },
         models: provider.getModels().map((model) => ({
           id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
-          reasoning: model.reasoning, source: "catalog",
+          reasoning: model.reasoning, input: model.input ?? ["text"], source: "catalog" as const,
         })),
         custom: this.db.listCustomProviders().some((item) => item.id === provider.id),
       });
@@ -193,7 +193,7 @@ export class ProviderRegistry {
     const error = refresh.errors.get(providerId)?.message;
     const models = this.modelsValue.getModels(providerId).map((model) => ({
       id: model.id, name: model.name, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
-      reasoning: model.reasoning, source: "remote" as const,
+      reasoning: model.reasoning, input: model.input ?? ["text"] as ("text" | "image")[], source: "remote" as const,
     }));
     return { ...(error ? { error } : {}), models };
   }

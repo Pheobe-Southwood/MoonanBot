@@ -56,6 +56,90 @@ describe("Web API", () => {
     expect((await app.server.inject({ method: "PUT", url: "/api/v1/settings", headers: { cookie }, payload: { value: { ...settings.value, web: { ...settings.value.web, port: 99_999 } }, version: settings.version } })).statusCode).toBe(400);
   });
 
+  it("versions the vision prompt without required placeholders and rejects unknown agents", async () => {
+    const app = await fixture();
+    const cookie = await login(app);
+    const current = await app.server.inject({ method: "GET", url: "/api/v1/prompts/vision", headers: { cookie } });
+    expect(current.statusCode).toBe(200);
+    expect(current.json().current.template).toContain("图片信息提取器");
+    const saved = await app.server.inject({ method: "PUT", url: "/api/v1/prompts/vision", headers: { cookie }, payload: { template: "只看构图与色彩。" } });
+    expect(saved.statusCode).toBe(200);
+    const versions = (await app.server.inject({ method: "GET", url: "/api/v1/prompts/vision", headers: { cookie } })).json();
+    expect(versions.current.template).toBe("只看构图与色彩。");
+    expect(versions.versions.length).toBeGreaterThanOrEqual(2);
+    expect((await app.server.inject({ method: "POST", url: "/api/v1/prompts/vision/reset", headers: { cookie } })).json().template).toContain("图片信息提取器");
+    expect((await app.server.inject({ method: "GET", url: "/api/v1/prompts/unknown", headers: { cookie } })).statusCode).toBe(404);
+    expect((await app.server.inject({ method: "PUT", url: "/api/v1/prompts/unknown", headers: { cookie }, payload: { template: "x" } })).statusCode).toBe(404);
+  });
+
+  it("exposes model input modalities and round-trips media settings and the force override", async () => {
+    const app = await fixture();
+    const cookie = await login(app);
+    const providers = (await app.server.inject({ method: "GET", url: "/api/v1/providers", headers: { cookie } })).json();
+    const deepseek = providers.find((item: any) => item.id === "deepseek");
+    expect(deepseek.models.length).toBeGreaterThan(0);
+    for (const model of deepseek.models) expect(Array.isArray(model.input)).toBe(true);
+    const settings = (await app.server.inject({ method: "GET", url: "/api/v1/settings", headers: { cookie } })).json();
+    expect(settings.value.media).toEqual({ enabled: true, downloadTimeoutMs: 30_000, byteTtlDays: 7, maxInjectedImages: 10 });
+    expect(settings.value.agents.vision).toMatchObject({ providerId: null, modelId: null, forceImageInput: false });
+    const next = {
+      value: {
+        ...settings.value,
+        media: { ...settings.value.media, byteTtlDays: 3, maxInjectedImages: 5, enabled: false },
+        agents: { ...settings.value.agents, simulation: { ...settings.value.agents.simulation, forceImageInput: true } },
+      },
+      version: settings.version,
+    };
+    const saved = (await app.server.inject({ method: "PUT", url: "/api/v1/settings", headers: { cookie }, payload: next })).json();
+    expect(saved.value.media).toMatchObject({ byteTtlDays: 3, maxInjectedImages: 5, enabled: false });
+    expect(saved.value.agents.simulation.forceImageInput).toBe(true);
+    const invalid = await app.server.inject({
+      method: "PUT", url: "/api/v1/settings", headers: { cookie },
+      payload: { value: { ...next.value, media: { ...next.value.media, byteTtlDays: 0 } }, version: saved.version },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error).toBe("invalid_media_ttl");
+  });
+
+  it("imports character packages with or without the optional vision prompt", async () => {
+    const app = await fixture();
+    const cookie = await login(app);
+    const exported = (await app.server.inject({ method: "GET", url: "/api/v1/export/character", headers: { cookie } })).json();
+    expect(exported.prompts.vision).toBeTypeOf("string");
+    const legacy = { ...exported, prompts: { simulation: exported.prompts.simulation, synthesis: exported.prompts.synthesis } };
+    expect((await app.server.inject({ method: "POST", url: "/api/v1/import/character", headers: { cookie }, payload: legacy })).statusCode).toBe(200);
+    expect((await app.server.inject({ method: "GET", url: "/api/v1/prompts/vision", headers: { cookie } })).json().current.template).toBe(exported.prompts.vision);
+    const custom = { ...exported, prompts: { ...exported.prompts, vision: "自定义识图提示词" } };
+    expect((await app.server.inject({ method: "POST", url: "/api/v1/import/character", headers: { cookie }, payload: custom })).statusCode).toBe(200);
+    const after = (await app.server.inject({ method: "GET", url: "/api/v1/prompts/vision", headers: { cookie } })).json();
+    expect(after.current.template).toBe("自定义识图提示词");
+  });
+
+  it("reports vision-related readiness warnings without blocking start", async () => {
+    const app = await fixture();
+    const cookie = await login(app);
+    const profile = (await app.server.inject({ method: "GET", url: "/api/v1/profile", headers: { cookie } })).json();
+    await app.server.inject({ method: "PUT", url: "/api/v1/profile", headers: { cookie }, payload: { ...profile, soul: "谨慎。" } });
+    const settings = (await app.server.inject({ method: "GET", url: "/api/v1/settings", headers: { cookie } })).json();
+    await app.server.inject({
+      method: "PUT", url: "/api/v1/settings", headers: { cookie },
+      payload: { value: { ...settings.value, agents: { ...settings.value.agents, default: { providerId: "deepseek", modelId: "deepseek-v4-flash", thinkingLevel: "medium" } } }, version: settings.version },
+    });
+    const runtime = (await app.server.inject({ method: "GET", url: "/api/v1/runtime", headers: { cookie } })).json();
+    expect(runtime.readiness.problems).toHaveLength(0);
+    expect(runtime.readiness.ready).toBe(true);
+    expect(runtime.readiness.warnings.join(" ")).toContain("图片识别");
+    const current = (await app.server.inject({ method: "GET", url: "/api/v1/settings", headers: { cookie } })).json();
+    const forced = {
+      value: { ...current.value, agents: { ...current.value.agents, vision: { ...current.value.agents.vision, forceImageInput: true } } },
+      version: current.version,
+    };
+    const saved = await app.server.inject({ method: "PUT", url: "/api/v1/settings", headers: { cookie }, payload: forced });
+    expect(saved.statusCode).toBe(200);
+    const after = (await app.server.inject({ method: "GET", url: "/api/v1/runtime", headers: { cookie } })).json();
+    expect(after.readiness.warnings.join(" ")).not.toContain("图片识别");
+  });
+
   it("masks credentials and exports/imports only the versioned character package", async () => {
     const app = await fixture();
     const cookie = await login(app);

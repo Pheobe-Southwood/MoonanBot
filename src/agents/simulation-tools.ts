@@ -1,13 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { formatAvailableActions, formatObservedMessages, listAvailableActions, validateDuration, validateWait } from "../domain/behavior.js";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
+import { formatAvailableActions, listAvailableActions, validateDuration, validateWait } from "../domain/behavior.js";
 import type { ConversationTarget, Importance, StoredMessage } from "../domain/types.js";
+import type { MediaView } from "../media/render.js";
 import type { ChatPlatformAdapter } from "../platforms/types.js";
 import type { MoonanDatabase } from "../storage/database.js";
 
 function result(text: string, details: Record<string, unknown> = {}, terminate = false): AgentToolResult<Record<string, unknown>> {
   return { content: [{ type: "text", text }], details, ...(terminate ? { terminate: true } : {}) };
+}
+
+function blocks(content: Array<TextContent | ImageContent>, details: Record<string, unknown> = {}, terminate = false): AgentToolResult<Record<string, unknown>> {
+  return { content, details, ...(terminate ? { terminate: true } : {}) };
 }
 
 function localTime(locale: string, timezone: string): string {
@@ -50,8 +56,9 @@ const actionSchema = Type.Object({
   messages: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
 }, { additionalProperties: false });
 
-export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformAdapter): AgentTool[] {
+export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformAdapter, media: MediaView): AgentTool[] {
   const actionsFooter = (): string => formatAvailableActions(listAvailableActions(db.getRuntime()));
+  const footerText = (): string => `\n\n${actionsFooter()}`;
 
   const performTool: AgentTool<typeof actionSchema> = {
     name: "perform_action",
@@ -150,7 +157,7 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
             const label = entry.kind === "group" ? "群聊" : "好友";
             const unreadText = entry.unread > 0 ? `有${entry.unread}条未读消息` : "没有未读消息";
             const latestText = entry.latest
-              ? `[${new Date(entry.latest.occurredAt).toISOString()}] ${entry.latest.senderName}: ${truncate(entry.latest.content, 50)}`
+              ? `[${new Date(entry.latest.occurredAt).toISOString()}] ${entry.latest.senderName}: ${truncate(media.preview(entry.latest), 50)}`
               : "无消息记录";
             return `（${label}）${entry.name}（${entry.id}）（${unreadText}）（最近一条：${latestText}）`;
           });
@@ -182,16 +189,26 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
           const header = unreadCount > 0
             ? `截止到上次打开，有 ${unreadCount} 条新消息；以下为最新的 ${messages.length} 条（旧→新）：`
             : `没有新消息；以下为最近的 ${messages.length} 条（旧→新）：`;
-          const text = [
+          const rendered = await media.render(messages, { describeLazily: true });
+          const head = [
             `${profile.name}打开了${target.name ?? target.id}的聊天窗口。`,
             `当前手机状态：聊天窗口（${target.name ?? target.id}）`,
             `当前时间：${localTime(profile.locale, profile.timezone)}`,
             header,
-            formatObservedMessages(messages),
+          ].join("\n");
+          const tail = [
             "可以使用 load_history 查看更早的消息。",
             `${profile.name}的其他好友/群聊存在 ${otherUnread} 条未读消息。`,
           ].join("\n");
-          return result(withFooter(text), { runtime, messages });
+          if (!rendered.images.length) {
+            const text = [head, rendered.text, tail].join("\n");
+            return result(withFooter(text), { runtime, messages });
+          }
+          return blocks([
+            { type: "text", text: `${head}\n` },
+            ...rendered.content,
+            { type: "text", text: `\n${tail}${footerText()}` },
+          ], { runtime, messages });
         }
 
         if (params.action === "load_history") {
@@ -203,11 +220,23 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
           const otherUnread = db.unreadSummary(false)
             .filter((item) => !(item.target.kind === phone.target.kind && item.target.id === phone.target.id))
             .reduce((sum, item) => sum + item.count, 0);
-          const body = messages.length
-            ? `以下是更早的 ${messages.length} 条本地已观测历史（旧→新）：\n${formatObservedMessages(messages)}`
-            : "已经到最早的本地已观测消息。";
-          const text = `${body}\n${profile.name}的其他好友/群聊存在 ${otherUnread} 条未读消息。`;
-          return result(withFooter(text), { messages, localOnly: true });
+          const rendered = await media.render(messages, { describeLazily: true });
+          const head = messages.length
+            ? `以下是更早的 ${messages.length} 条本地已观测历史（旧→新）：`
+            : "";
+          const tail = `${profile.name}的其他好友/群聊存在 ${otherUnread} 条未读消息。`;
+          if (!messages.length) {
+            return result(withFooter(`已经到最早的本地已观测消息。\n${tail}`), { messages, localOnly: true });
+          }
+          if (!rendered.images.length) {
+            const text = `${head}\n${rendered.text}\n${tail}`;
+            return result(withFooter(text), { messages, localOnly: true });
+          }
+          return blocks([
+            { type: "text", text: `${head}\n` },
+            ...rendered.content,
+            { type: "text", text: `\n${tail}${footerText()}` },
+          ], { messages, localOnly: true });
         }
 
         if (params.action === "send_messages") {

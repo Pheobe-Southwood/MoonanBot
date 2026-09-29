@@ -1,5 +1,5 @@
 import { defaultSettings } from "./defaults.js";
-import type { AppSettings, OneBotOutboundClient, OneBotRole } from "./types.js";
+import type { AgentSelection, AppSettings, OneBotOutboundClient, OneBotRole } from "./types.js";
 
 export const OUTBOUND_ROLES: readonly OneBotRole[] = ["event", "api", "universal"];
 export const OUTBOUND_RECONNECT_MIN_MS = 1_000;
@@ -23,6 +23,20 @@ function roleOr(value: unknown, fallback: OneBotRole): OneBotRole {
   return (OUTBOUND_ROLES as readonly string[]).includes(role) ? role as OneBotRole : fallback;
 }
 
+const THINKING_LEVELS: readonly AgentSelection["thinkingLevel"][] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/** Coerces one stored agent selection so missing or corrupt fields fall back to the default slot shape. */
+function normalizeSelection(value: unknown, fallback: AgentSelection): AgentSelection {
+  if (!value || typeof value !== "object") return { ...fallback };
+  const input = value as Partial<AgentSelection>;
+  return {
+    providerId: typeof input.providerId === "string" && input.providerId ? input.providerId : null,
+    modelId: typeof input.modelId === "string" && input.modelId ? input.modelId : null,
+    thinkingLevel: THINKING_LEVELS.includes(input.thinkingLevel as AgentSelection["thinkingLevel"]) ? input.thinkingLevel! : fallback.thinkingLevel,
+    forceImageInput: input.forceImageInput === undefined ? false : Boolean(input.forceImageInput),
+  };
+}
+
 /** Rejects the settings payload with a stable error code instead of silently coercing it. */
 export function assertValidSettings(settings: AppSettings): void {
   if (!Number.isInteger(settings.web.port) || settings.web.port < 1 || settings.web.port > 65_535) throw new Error("invalid_port");
@@ -36,6 +50,10 @@ export function assertValidSettings(settings: AppSettings): void {
   if (settings.simulation.contextModelRatio <= 0 || settings.simulation.contextModelRatio > 1) throw new Error("invalid_context_ratio");
   if (settings.synthesis.memorySoftTokens < 1 || settings.synthesis.memoryHardTokens < settings.synthesis.memorySoftTokens) throw new Error("invalid_memory_limits");
   if (settings.synthesis.retryCount < 0 || settings.synthesis.retryCount > 10) throw new Error("invalid_retry_count");
+  if (typeof settings.media.enabled !== "boolean") throw new Error("invalid_media_enabled");
+  if (!Number.isFinite(settings.media.downloadTimeoutMs) || settings.media.downloadTimeoutMs < 1_000 || settings.media.downloadTimeoutMs > 600_000) throw new Error("invalid_media_download_timeout");
+  if (!Number.isInteger(settings.media.byteTtlDays) || settings.media.byteTtlDays < 1) throw new Error("invalid_media_ttl");
+  if (!Number.isInteger(settings.media.maxInjectedImages) || settings.media.maxInjectedImages < 1) throw new Error("invalid_media_image_limit");
   assertOutbound(settings.onebot.outbound);
 }
 
@@ -93,6 +111,8 @@ export function normalizeSettings(value: unknown): AppSettings {
   if (!value || typeof value !== "object") return base;
   const input = value as Partial<AppSettings>;
   const onebot = (input.onebot ?? {}) as Partial<AppSettings["onebot"]>;
+  const media = (input.media ?? {}) as Partial<AppSettings["media"]>;
+  const agents = (input.agents ?? {}) as Partial<AppSettings["agents"]>;
   const seen = new Set<string>();
   const outbound = (Array.isArray(onebot.outbound) ? onebot.outbound : [])
     .map(normalizeOutboundEntry)
@@ -115,6 +135,17 @@ export function normalizeSettings(value: unknown): AppSettings {
     },
     simulation: { ...base.simulation, ...(input.simulation ?? {}) },
     synthesis: { ...base.synthesis, ...(input.synthesis ?? {}) },
-    agents: { ...base.agents, ...(input.agents ?? {}) },
+    media: {
+      enabled: media.enabled === undefined ? base.media.enabled : Boolean(media.enabled),
+      downloadTimeoutMs: inRange(media.downloadTimeoutMs, 1_000, 600_000, base.media.downloadTimeoutMs),
+      byteTtlDays: Math.trunc(inRange(media.byteTtlDays, 1, 3_650, base.media.byteTtlDays)),
+      maxInjectedImages: Math.trunc(inRange(media.maxInjectedImages, 1, 1_000, base.media.maxInjectedImages)),
+    },
+    agents: {
+      default: normalizeSelection(agents.default, base.agents.default),
+      simulation: normalizeSelection(agents.simulation, base.agents.simulation),
+      synthesis: normalizeSelection(agents.synthesis, base.agents.synthesis),
+      vision: normalizeSelection(agents.vision, base.agents.vision),
+    },
   };
 }

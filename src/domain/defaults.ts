@@ -6,7 +6,7 @@ export function randomSecret(bytes = 24): string {
 }
 
 export function defaultSettings(accessToken = randomSecret()): AppSettings {
-  const emptyAgent = { providerId: null, modelId: null, thinkingLevel: "medium" as const };
+  const emptyAgent = { providerId: null, modelId: null, thinkingLevel: "medium" as const, forceImageInput: false };
   return {
     web: { host: "127.0.0.1", port: 21314, locale: "auto" },
     onebot: {
@@ -46,10 +46,17 @@ export function defaultSettings(accessToken = randomSecret()): AppSettings {
       retryCount: 5,
       retryBaseDelayMs: 1_000,
     },
+    media: {
+      enabled: true,
+      downloadTimeoutMs: 30_000,
+      byteTtlDays: 7,
+      maxInjectedImages: 10,
+    },
     agents: {
       default: { ...emptyAgent },
       simulation: { ...emptyAgent },
       synthesis: { ...emptyAgent },
+      vision: { ...emptyAgent },
     },
   };
 }

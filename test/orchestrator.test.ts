@@ -8,7 +8,7 @@ import type { ProviderRegistry } from "../src/providers/registry.js";
 import { testDatabase } from "./helpers.js";
 
 const cleanups: Array<() => void> = [];
-afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.useRealTimers(); });
+afterEach(() => { for (const cleanup of cleanups.splice(0)) cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 function fakePlatform(): ChatPlatformAdapter {
   return {
@@ -282,5 +282,164 @@ describe("runtime orchestration with pi faux provider", () => {
     const wake = db.eventsSince(0).find((event) => event.type === "operator_wake");
     expect(wake?.text).toContain("你被唤醒了");
     expect(wake?.text).toContain("等待期间来的消息");
+  });
+});
+
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02]);
+
+function stubFetchPng(): void {
+  vi.stubGlobal("fetch", vi.fn(async () => ({
+    ok: true,
+    arrayBuffer: async () => pngBytes.buffer.slice(pngBytes.byteOffset, pngBytes.byteOffset + pngBytes.byteLength),
+  })));
+}
+
+function configuredWithInput(input: ("text" | "image")[], vision: boolean) {
+  const fixture = testDatabase();
+  cleanups.push(fixture.cleanup);
+  const profile = fixture.db.getProfile();
+  fixture.db.updateProfile({ ...profile, soul: "安静、谨慎、会主动安排自己的生活。" }, profile.version);
+  const faux = fauxProvider({ provider: "faux-moonan", models: [{ id: "faux-life", reasoning: true, contextWindow: 400_000, input }] });
+  const models = createModels();
+  models.setProvider(faux.provider);
+  const settings = fixture.db.getSettings();
+  settings.value.agents.default = { providerId: "faux-moonan", modelId: "faux-life", thinkingLevel: "medium" };
+  if (vision) settings.value.agents.vision = { providerId: "faux-moonan", modelId: "faux-life", thinkingLevel: "off" };
+  settings.value.simulation.messageIntervalMs = 0;
+  settings.value.synthesis.retryBaseDelayMs = 0;
+  fixture.db.updateSettings(settings.value, settings.version);
+  fixture.db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "do_not_disturb", isFriend: true });
+  return { ...fixture, faux, providers: { models } as unknown as ProviderRegistry };
+}
+
+function parkInWaiting(db: ReturnType<typeof testDatabase>["db"]): number {
+  const since = Date.now() - 1;
+  db.setRuntime({ mode: "waiting", phone: { kind: "chat", target: sevenTarget } });
+  db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "count", count: 1, since });
+  return since;
+}
+
+function imageEvent(messageId: string, url?: string): PlatformMessageEvent {
+  return privateEvent("7", messageId, {
+    target: sevenTarget,
+    content: "[图片：a.png]",
+    segments: [{ type: "image", data: { file: "a.png", ...(url ? { url } : {}) } }],
+  });
+}
+
+function lastUserContent(context: any): any {
+  return context.messages.at(-1).content;
+}
+
+function contentText(content: any): string {
+  return typeof content === "string" ? content : content.map((block: any) => block.text ?? "").join("");
+}
+
+describe("image understanding", () => {
+  it("injects real images into the wake prompt and strips base64 before persisting state", async () => {
+    const { db, faux, providers } = configuredWithInput(["text", "image"], false);
+    stubFetchPng();
+    let captured: any = null;
+    faux.setResponses([
+      (context) => { captured = context; return fauxAssistantMessage([fauxToolCall("perform_action", { action: "idle", durationMinutes: 30 })], { stopReason: "toolUse" }); },
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    parkInWaiting(db);
+    await orchestrator.handleIncoming(imageEvent("img-1", "http://img.test/a.png"));
+    await eventually(() => { expect(captured).not.toBeNull(); });
+    const content = lastUserContent(captured);
+    expect(Array.isArray(content)).toBe(true);
+    expect(content.find((block: any) => block.type === "image")?.mimeType).toBe("image/png");
+    expect(contentText(content)).toContain("[图片]");
+    await eventually(() => {
+      const persisted = JSON.stringify(db.getAgentState("simulation"));
+      expect(persisted).toContain("[图片]");
+      expect(persisted).not.toContain('"type":"image"');
+      expect(persisted).not.toContain("iVBOR");
+    });
+  });
+
+  it("routes images through the Vision Agent for text-only simulation models", async () => {
+    const { db, faux, providers } = configuredWithInput(["text"], true);
+    stubFetchPng();
+    let captured: any = null;
+    faux.setResponses([
+      fauxAssistantMessage("图中是一只橘猫。文字：无文字"),
+      (context) => { captured = context; return fauxAssistantMessage([fauxToolCall("perform_action", { action: "idle", durationMinutes: 30 })], { stopReason: "toolUse" }); },
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    const since = parkInWaiting(db);
+    await orchestrator.handleIncoming(imageEvent("img-2", "http://img.test/a.png"));
+    await eventually(() => { expect(captured).not.toBeNull(); });
+    expect(contentText(lastUserContent(captured))).toContain("[图片：图中是一只橘猫。文字：无文字]");
+    await eventually(() => {
+      const runs = db.listAgentRuns(10, "vision");
+      expect(runs).toHaveLength(1);
+      expect(runs[0]!.status).toBe("completed");
+      const stored = db.listMessagesSince(sevenTarget, since);
+      const media = stored.flatMap((message) => db.listMediaForMessages([message.id]).get(message.id) ?? []);
+      expect(media[0]?.description).toContain("橘猫");
+    });
+  });
+
+  it("falls back to placeholders with a non-blocking readiness warning when no vision model is configured", async () => {
+    const { db, faux, providers } = configuredWithInput(["text"], false);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    const readiness = orchestrator.readiness();
+    expect(readiness.problems).toHaveLength(0);
+    expect(readiness.ready).toBe(true);
+    expect(readiness.warnings.join(" ")).toContain("图片识别");
+    let captured: any = null;
+    faux.setResponses([
+      (context) => { captured = context; return fauxAssistantMessage([fauxToolCall("perform_action", { action: "idle", durationMinutes: 30 })], { stopReason: "toolUse" }); },
+    ]);
+    parkInWaiting(db);
+    await orchestrator.handleIncoming(imageEvent("img-3"));
+    await eventually(() => { expect(captured).not.toBeNull(); });
+    expect(contentText(lastUserContent(captured))).toContain("[图片：a.png]");
+  });
+
+  it("attaches real images to synthesis runs when the synthesis model sees images", async () => {
+    const { db, faux, providers } = configuredWithInput(["text", "image"], false);
+    stubFetchPng();
+    let synthesisInput: any = null;
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "sleep", durationMinutes: 30 })], { stopReason: "toolUse" }),
+      (context) => { synthesisInput = context; return fauxAssistantMessage([fauxToolCall("finish_synthesis", { summary: "记录了一张图片。" })], { stopReason: "toolUse" }); },
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.handleIncoming(imageEvent("img-4", "http://img.test/a.png"));
+    await orchestrator.startBot();
+    await eventually(() => {
+      expect(synthesisInput).not.toBeNull();
+      expect(db.listAgentRuns(10, "synthesis")[0]?.status).toBe("completed");
+    });
+    const content = lastUserContent(synthesisInput);
+    expect(Array.isArray(content)).toBe(true);
+    expect(content.find((block: any) => block.type === "image")?.mimeType).toBe("image/png");
+  });
+
+  it("annotates synthesis events with Vision descriptions when the synthesis model is text-only", async () => {
+    const { db, faux, providers } = configuredWithInput(["text"], true);
+    stubFetchPng();
+    let synthesisInput: any = null;
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "sleep", durationMinutes: 30 })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("一张日落照片。文字：无文字"),
+      (context) => { synthesisInput = context; return fauxAssistantMessage([fauxToolCall("finish_synthesis", { summary: "记录了一张日落照片。" })], { stopReason: "toolUse" }); },
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.handleIncoming(imageEvent("img-5", "http://img.test/a.png"));
+    await orchestrator.startBot();
+    await eventually(() => {
+      expect(synthesisInput).not.toBeNull();
+      expect(db.listAgentRuns(10, "synthesis")[0]?.status).toBe("completed");
+    });
+    expect(contentText(lastUserContent(synthesisInput))).toContain("（图片内容：一张日落照片。文字：无文字）");
   });
 });

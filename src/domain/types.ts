@@ -107,6 +107,30 @@ export interface AgentSelection {
   providerId: string | null;
   modelId: string | null;
   thinkingLevel: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Operator override: treat the selected model as image-capable even when its catalog entry says otherwise. */
+  forceImageInput?: boolean;
+}
+
+export type AgentKind = "simulation" | "synthesis" | "vision";
+
+/** One inbound image tracked in the media cache: raw bytes (TTL-bound) plus the permanent text description. */
+export interface MessageMedia {
+  id: string;
+  messageId: string;
+  segmentIndex: number;
+  kind: "image";
+  fileId: string;
+  url: string | null;
+  mime: string | null;
+  byteSize: number;
+  bytes: Uint8Array | null;
+  status: "pending" | "cached" | "failed";
+  error: string | null;
+  description: string | null;
+  describedAt: number | null;
+  fetchedAt: number | null;
+  purgedAt: number | null;
+  createdAt: number;
 }
 
 export interface OneBotOutboundClient {
@@ -160,10 +184,17 @@ export interface AppSettings {
     retryCount: number;
     retryBaseDelayMs: number;
   };
+  media: {
+    enabled: boolean;
+    downloadTimeoutMs: number;
+    byteTtlDays: number;
+    maxInjectedImages: number;
+  };
   agents: {
     default: AgentSelection;
     simulation: AgentSelection;
     synthesis: AgentSelection;
+    vision: AgentSelection;
   };
 }
 
@@ -185,7 +216,7 @@ export interface AgentTraceMessage {
 
 export interface AgentRunSummary {
   id: string;
-  agent: "simulation" | "synthesis";
+  agent: AgentKind;
   status: "running" | "completed" | "failed" | "aborted" | "skipped";
   trigger: string;
   startedAt: number;

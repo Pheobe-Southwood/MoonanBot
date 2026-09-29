@@ -16,6 +16,10 @@ _Avoid_: Main Agent, Behavior Agent, Agents
 The scholar that turns a completed period of lived events into changes to active memory and social understanding.
 _Avoid_: Archive Agent, Memory Agent
 
+**Vision Agent**:
+The third mind: a separately configured model slot that turns a cached image into an Image Description for consumers whose models cannot see images. It never joins the conversation itself.
+_Avoid_: Image recognition model, OCR bot, multimodal Agent
+
 **Director Note**:
 A user-visible account of the Simulation Agent's psychological or narrative analysis that is never sent as a chat message.
 _Avoid_: Reply, hidden reasoning
@@ -61,6 +65,21 @@ _Avoid_: Active memory
 **Synthesis Batch**:
 A closed time window of Event Records considered together by the Synthesis Agent.
 _Avoid_: Session
+
+## Image understanding
+
+**Media Cache**:
+The stored form of one inbound image: downloaded bytes with a TTL, download status, and the permanent Image Description. Bytes may be purged while the description stays.
+_Avoid_: Attachment store, temp files
+
+**Image Description**:
+The permanent text rendering of one cached image, generated lazily by the Vision Agent the first time an image-blind consumer needs it and reused by everyone afterwards.
+_Avoid_: Caption, alt text
+
+**Image Input Capability**:
+Whether one Agent slot's effective model accepts images — declared by the provider catalog or forced by the operator per slot. It decides between real image content and Image Descriptions at render time.
+_Avoid_: Multimodal, vision support
+
 ## Social world
 
 **Contact**:
