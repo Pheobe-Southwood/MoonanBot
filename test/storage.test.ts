@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { MoonanDatabase } from "../src/storage/database.js";
+import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT } from "../src/agents/prompts.js";
 import { testDatabase } from "./helpers.js";
 
 describe("SQLite source of truth", () => {
@@ -61,6 +62,62 @@ describe("SQLite source of truth", () => {
     } finally {
       reopened.close();
       fixture.cleanup();
+    }
+  });
+
+  it("cancels only the requested timer kind and lists pending timers", () => {
+    const fixture = testDatabase();
+    try {
+      fixture.db.createTimer("idle", Date.now() + 1_000, {});
+      fixture.db.createTimer("wait", Date.now() + 2_000, { mode: "count" });
+      expect(fixture.db.listPendingTimers()).toHaveLength(2);
+      expect(fixture.db.listPendingTimers("wait")[0]?.payload).toMatchObject({ mode: "count" });
+      fixture.db.cancelPendingTimers("wait");
+      expect(fixture.db.listPendingTimers("wait")).toHaveLength(0);
+      expect(fixture.db.listPendingTimers("idle")).toHaveLength(1);
+      fixture.db.cancelPendingTimers();
+      expect(fixture.db.listPendingTimers()).toHaveLength(0);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("lists incoming messages since a timestamp in ascending order", () => {
+    const fixture = testDatabase();
+    try {
+      const target = { platform: "onebot" as const, kind: "private" as const, id: "7", name: "Seven" };
+      const message = (id: string, direction: "incoming" | "outgoing", occurredAt: number) => ({
+        id, platformMessageId: `p-${id}`, target, senderId: "7", senderName: "Seven", direction,
+        content: id, segments: [], occurredAt, observedAt: occurredAt, deliveryStatus: "received" as const, readAt: null,
+      });
+      fixture.db.insertMessage(message("a", "incoming", 100));
+      fixture.db.insertMessage(message("b", "outgoing", 200));
+      fixture.db.insertMessage(message("c", "incoming", 300));
+      expect(fixture.db.listMessagesSince(target, 100).map((item) => item.id)).toEqual(["a", "c"]);
+      expect(fixture.db.listMessagesSince(target, 150).map((item) => item.id)).toEqual(["c"]);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("migrates untouched legacy simulation prompts and preserves edited ones", () => {
+    const fixture = testDatabase();
+    fixture.db.setPrompt("simulation", LEGACY_SIMULATION_PROMPT_V0_0_1);
+    fixture.db.close();
+    const reopened = new MoonanDatabase(fixture.path);
+    try {
+      expect(reopened.getPrompt("simulation").template).toBe(SIMULATION_SYSTEM_PROMPT);
+      expect(reopened.listPromptVersions("simulation").length).toBeGreaterThanOrEqual(2);
+    } finally {
+      reopened.close();
+      fixture.cleanup();
+    }
+
+    const second = testDatabase();
+    second.db.setPrompt("simulation", "自定义 {{botName}} {{soul}} {{environment}} {{memory}} {{relationships}} {{groups}}");
+    second.db.close();
+    const reopenedSecond = new MoonanDatabase(second.path);
+    try {
+      expect(reopenedSecond.getPrompt("simulation").template).toContain("自定义");
+    } finally {
+      reopenedSecond.close();
+      second.cleanup();
     }
   });
 

@@ -28,6 +28,10 @@ export function assertValidSettings(settings: AppSettings): void {
   if (!Number.isInteger(settings.web.port) || settings.web.port < 1 || settings.web.port > 65_535) throw new Error("invalid_port");
   if (settings.simulation.idleMinMinutes < 1 || settings.simulation.idleMaxMinutes < settings.simulation.idleMinMinutes) throw new Error("invalid_idle_bounds");
   if (settings.simulation.sleepMinMinutes < 1 || settings.simulation.sleepMaxMinutes < settings.simulation.sleepMinMinutes) throw new Error("invalid_sleep_bounds");
+  if (settings.simulation.waitMinSeconds < 1 || settings.simulation.waitMaxSeconds < settings.simulation.waitMinSeconds) throw new Error("invalid_wait_seconds_bounds");
+  if (settings.simulation.waitMinMessages < 1 || settings.simulation.waitMaxMessages < settings.simulation.waitMinMessages) throw new Error("invalid_wait_messages_bounds");
+  if (settings.simulation.waitMessageTimeoutSeconds < 1) throw new Error("invalid_wait_timeout");
+  if (settings.simulation.contactListMaxEntries < 1) throw new Error("invalid_contact_list_limit");
   if (settings.simulation.priorityWakeProbability < 0 || settings.simulation.priorityWakeProbability > 1) throw new Error("invalid_wake_probability");
   if (settings.simulation.contextModelRatio <= 0 || settings.simulation.contextModelRatio > 1) throw new Error("invalid_context_ratio");
   if (settings.synthesis.memorySoftTokens < 1 || settings.synthesis.memoryHardTokens < settings.synthesis.memorySoftTokens) throw new Error("invalid_memory_limits");

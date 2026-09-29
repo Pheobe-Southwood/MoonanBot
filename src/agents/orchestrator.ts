@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, Message, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { archiveThreshold, estimateTokens, notificationFor } from "../domain/behavior.js";
-import type { AgentSelection, Importance, StoredMessage } from "../domain/types.js";
+import { archiveThreshold, estimateTokens, formatAvailableActions, formatObservedMessages, listAvailableActions, notificationFor, segmentsMention } from "../domain/behavior.js";
+import type { AgentSelection, ConversationTarget, Importance, NotificationDecision, StoredMessage } from "../domain/types.js";
 import type { PlatformMessageEvent } from "../platforms/types.js";
 import type { ChatPlatformAdapter } from "../platforms/types.js";
 import type { ProviderRegistry } from "../providers/registry.js";
-import type { MoonanDatabase } from "../storage/database.js";
+import type { MoonanDatabase, TimerRecord } from "../storage/database.js";
 import { renderPrompt } from "./prompts.js";
 import { buildSimulationTools } from "./simulation-tools.js";
 import { buildSynthesisTools } from "./synthesis-tools.js";
@@ -93,6 +93,7 @@ export class RuntimeOrchestrator {
   async startBot(): Promise<void> {
     const readiness = this.readiness();
     if (!readiness.ready) throw new Error(readiness.problems.join("；"));
+    this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", health: "healthy", nextWakeAt: null, lastError: null });
     this.db.addEvent("character_started", "你醒来了", {});
     await this.activate("你醒来了");
@@ -104,9 +105,12 @@ export class RuntimeOrchestrator {
   }
 
   async wakeBot(): Promise<void> {
+    const [wait] = this.db.listPendingTimers("wait");
+    this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", nextWakeAt: null });
-    this.db.addEvent("operator_wake", "你被唤醒了，请决定下一步行动。", {});
-    await this.activate("你被唤醒了，请决定下一步行动。");
+    const text = wait ? this.waitMergeText(wait, "你被唤醒了，请决定下一步行动。") : "你被唤醒了，请决定下一步行动。";
+    this.db.addEvent("operator_wake", text, {});
+    await this.activate(text);
   }
 
   setOutbound(enabled: boolean): void {
@@ -114,6 +118,8 @@ export class RuntimeOrchestrator {
   }
 
   async handleIncoming(event: PlatformMessageEvent): Promise<void> {
+    const observed = this.db.getRuntime();
+    if (observed.activeSelfId && event.senderId === observed.activeSelfId) return;
     const existing = this.db.getContact(event.senderId);
     this.db.upsertContact({
       platform: "onebot", id: event.senderId, name: event.senderName, aliases: existing?.aliases ?? [],
@@ -135,9 +141,63 @@ export class RuntimeOrchestrator {
     const runtime = this.db.getRuntime();
     if (runtime.mode === "paused") return;
     const importance: Importance = existing?.importance ?? "normal";
-    const decision = notificationFor(event.target.kind, importance, runtime.mode === "sleeping", this.random, this.db.getSettings().value.simulation.priorityWakeProbability);
+    const mention = event.target.kind === "group" && segmentsMention(event.segments, runtime.activeSelfId);
+    const decision = notificationFor(event.target.kind, importance, runtime.mode === "sleeping", this.random, this.db.getSettings().value.simulation.priorityWakeProbability, mention);
+    if (runtime.mode === "waiting") { this.advanceWait(event, decision); return; }
     if (decision.signal === "none" || !decision.wakes) return;
     this.queueNotification(decision.signal);
+  }
+
+  /** While waiting: any notification-level message ends the wait early (q5+q22); silent visible messages in the watched chat count toward messageCount. */
+  private advanceWait(event: PlatformMessageEvent, decision: NotificationDecision): void {
+    const [wait] = this.db.listPendingTimers("wait");
+    if (decision.signal !== "none" && decision.wakes) { this.queueNotification(decision.signal); return; }
+    if (!wait || !decision.visibleOnPhone || wait.payload.mode !== "count") return;
+    const watch = wait.payload.watch as ConversationTarget | undefined;
+    if (!watch || watch.kind !== event.target.kind || watch.id !== event.target.id) return;
+    const since = Number(wait.payload.since ?? wait.dueAt);
+    const arrived = this.db.listMessagesSince(watch, since).length;
+    const needed = Number(wait.payload.count ?? 1);
+    if (arrived < needed) return;
+    this.db.cancelPendingTimers("wait");
+    this.db.setRuntime({ mode: "awake", nextWakeAt: null });
+    const text = this.waitText(watch, since, `等待的 ${needed} 条新消息已到达。`);
+    this.db.addEvent("wait_elapsed", text, wait.payload);
+    void this.activate(text);
+  }
+
+  private waitText(watch: ConversationTarget, since: number, head: string): string {
+    const profile = this.db.getProfile();
+    const messages = this.db.listMessagesSince(watch, since);
+    const otherUnread = this.db.unreadSummary(false)
+      .filter((item) => !(item.target.kind === watch.kind && item.target.id === watch.id))
+      .reduce((sum, item) => sum + item.count, 0);
+    return [
+      head,
+      `等待期间${watch.name ?? watch.id}的新消息：`,
+      messages.length ? formatObservedMessages(messages) : "没有新消息。",
+      `${profile.name}的其他好友/群聊存在 ${otherUnread} 条未读消息。`,
+    ].join("\n");
+  }
+
+  private waitMergeText(wait: TimerRecord, head: string): string {
+    const watch = wait.payload.watch as ConversationTarget | undefined;
+    return watch ? this.waitText(watch, Number(wait.payload.since ?? wait.dueAt), head) : head;
+  }
+
+  private waitElapsedText(timer: TimerRecord): string {
+    const watch = timer.payload.watch as ConversationTarget | undefined;
+    const since = Number(timer.payload.since ?? timer.dueAt);
+    if (!watch) return "等待结束，请决定下一步行动。";
+    if (timer.payload.mode === "count") {
+      const needed = Number(timer.payload.count ?? 1);
+      const arrived = this.db.listMessagesSince(watch, since).length;
+      const head = arrived >= needed
+        ? `等待的 ${needed} 条新消息已到达。`
+        : `等待超时：只收到 ${arrived}/${needed} 条新消息。`;
+      return this.waitText(watch, since, head);
+    }
+    return this.waitText(watch, since, `等待时间已到（${Number(timer.payload.seconds ?? 0)} 秒）。`);
   }
 
   private queueNotification(signal: "alarm" | "ring" | "vibration"): void {
@@ -149,10 +209,16 @@ export class RuntimeOrchestrator {
       const selected = this.pendingSignal;
       this.pendingSignal = null;
       if (!selected) return;
-      const text = selected === "alarm" ? "手机闹钟响了" : selected === "ring" ? "手机响了" : "手机振动了";
+      let text = selected === "alarm" ? "手机闹钟响了" : selected === "ring" ? "手机响了" : "手机振动了";
       const type = selected === "alarm" ? "phone_alarm" : selected === "ring" ? "phone_ring" : "phone_vibration";
+      const [wait] = this.db.listPendingTimers("wait");
+      if (wait) {
+        this.db.cancelPendingTimers("wait");
+        text = this.waitMergeText(wait, text);
+      }
       this.db.addEvent(type, text, {});
-      if (this.db.getRuntime().mode === "sleeping") this.db.setRuntime({ mode: "awake" });
+      const mode = this.db.getRuntime().mode;
+      if (mode === "sleeping" || mode === "waiting") this.db.setRuntime({ mode: "awake", nextWakeAt: null });
       void this.activate(text, selected !== "vibration");
     }, this.db.getSettings().value.simulation.notificationWindowMs);
   }
@@ -161,6 +227,13 @@ export class RuntimeOrchestrator {
     if (this.stopped) return;
     for (const timer of this.db.claimDueTimers()) {
       const wasPaused = this.db.getRuntime().mode === "paused";
+      if (timer.kind === "wait") {
+        const text = this.waitElapsedText(timer);
+        this.db.setRuntime({ ...(wasPaused ? {} : { mode: "awake" as const }), nextWakeAt: null });
+        this.db.addEvent("wait_elapsed", text, timer.payload, timer.dueAt);
+        if (!wasPaused) await this.activate(text);
+        continue;
+      }
       const isAlarm = timer.kind === "alarm";
       const text = isAlarm ? "闹钟响了" : "你设置的自娱自乐时间到了，请进行下一步动作";
       this.db.setRuntime({ ...(wasPaused ? {} : { mode: "awake" as const }), nextWakeAt: null });
@@ -213,30 +286,29 @@ export class RuntimeOrchestrator {
 
   async activate(text: string, urgent = false): Promise<void> {
     if (this.db.getRuntime().mode === "paused") return;
+    const message = `${text}\n\n${formatAvailableActions(listAvailableActions(this.db.getRuntime()))}`;
     let agent: Agent;
     try { agent = this.ensureSimulationAgent(); } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.db.setRuntime({ health: "degraded", lastError: message });
+      const problem = error instanceof Error ? error.message : String(error);
+      this.db.setRuntime({ health: "degraded", lastError: problem });
       return;
     }
     if (agent.state.isStreaming) {
-      if (urgent) agent.steer(userMessage(text));
-      else agent.followUp(userMessage(text));
+      if (urgent) agent.steer(userMessage(message));
+      else agent.followUp(userMessage(message));
       return;
     }
     const runId = this.db.beginAgentRun("simulation", text);
     this.simulationRunId = runId;
     this.simulationActionCalls = 0;
-    this.db.addAgentMessage(runId, "user", text);
     try {
-      await agent.prompt(text);
+      await agent.prompt(message);
       const settings = this.db.getSettings().value;
       for (let attempt = 0; this.needsContinuation() && attempt < settings.simulation.missingActionRetries; attempt += 1) {
         const name = this.db.getProfile().name;
         const correction = this.simulationActionCalls === 0
-          ? `请让${name}执行一个动作，若你想暂时结束会话，请让${name}自娱自乐或睡觉`
-          : `本轮动作已结束，但${name}没有安排下一步行动；请让${name}自娱自乐或睡觉以结束本轮。`;
-        this.db.addAgentMessage(runId, "user", correction);
+          ? `请让${name}执行一个动作，若你想暂时结束本轮，请让${name}自娱自乐、睡觉或在聊天窗口等待新消息`
+          : `本轮动作已结束，但${name}没有安排下一步行动；请让${name}自娱自乐、睡觉或等待新消息以结束本轮。`;
         await agent.prompt(correction);
       }
       if (this.needsContinuation()) {
@@ -256,9 +328,9 @@ export class RuntimeOrchestrator {
       );
       if (estimateTokens(JSON.stringify(agent.state.messages)) >= threshold) void this.scheduleSynthesis("context_threshold");
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.db.endAgentRun(runId, "failed", { input: 0, output: 0 }, message);
-      this.db.setRuntime({ health: "degraded", lastError: message });
+      const problem = error instanceof Error ? error.message : String(error);
+      this.db.endAgentRun(runId, "failed", { input: 0, output: 0 }, problem);
+      this.db.setRuntime({ health: "degraded", lastError: problem });
     } finally {
       this.simulationRunId = null;
     }
@@ -294,7 +366,6 @@ export class RuntimeOrchestrator {
         });
         const period = `${new Date(start).toISOString()} 至 ${new Date(end).toISOString()}`;
         const input = `过去 ${period} 经历的事件：\n${events.length ? events.map((event) => `[${new Date(event.occurredAt).toISOString()}] ${event.text}`).join("\n") : "没有外部消息或其他已记录事件。"}\n请利用工具修改记忆和关系网，并调用 finish_synthesis。`;
-        this.db.addAgentMessage(runId, "user", input);
         await agent.prompt(input);
         staging.commit();
         const usage = this.usage(agent.state.messages);

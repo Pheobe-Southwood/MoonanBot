@@ -20,9 +20,18 @@ import type {
   WorldEvent,
   WorldEventType,
 } from "../domain/types.js";
-import { SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT } from "../agents/prompts.js";
+import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT } from "../agents/prompts.js";
 
 type SqlValue = string | number | bigint | Uint8Array | null;
+
+export type TimerKind = "idle" | "alarm" | "wait";
+
+export interface TimerRecord {
+  id: string;
+  kind: TimerKind;
+  dueAt: number;
+  payload: Record<string, unknown>;
+}
 
 function json<T>(value: string): T {
   return JSON.parse(value) as T;
@@ -292,6 +301,13 @@ export class MoonanDatabase {
           .run(randomUUID(), agent, template, 1, timestamp);
       }
     }
+    this.migrateLegacyPrompts();
+  }
+
+  /** Exact-match prompt migration: replaces the active simulation template only while it is still the untouched 0.0.1 built-in default; user edits are preserved. */
+  private migrateLegacyPrompts(): void {
+    const row = this.sqlite.prepare("SELECT template FROM prompt_versions WHERE agent='simulation' AND active=1 ORDER BY created_at DESC LIMIT 1").get() as any;
+    if (row && row.template === LEGACY_SIMULATION_PROMPT_V0_0_1) this.setPrompt("simulation", SIMULATION_SYSTEM_PROMPT);
   }
 
   getSettings(): SettingsEnvelope {
@@ -436,6 +452,12 @@ export class MoonanDatabase {
     return rows.reverse().map((row) => this.mapMessage(row));
   }
 
+  listMessagesSince(target: ConversationTarget, since: number): StoredMessage[] {
+    const rows = this.sqlite.prepare(`SELECT * FROM messages WHERE platform=? AND target_kind=? AND target_id=? AND direction='incoming' AND occurred_at>=? ORDER BY occurred_at`)
+      .all(target.platform, target.kind, target.id, since) as any[];
+    return rows.map((row) => this.mapMessage(row));
+  }
+
   markTargetRead(target: ConversationTarget): void {
     this.sqlite.prepare("UPDATE messages SET read_at=? WHERE platform=? AND target_kind=? AND target_id=? AND direction='incoming' AND read_at IS NULL")
       .run(now(), target.platform, target.kind, target.id);
@@ -471,14 +493,14 @@ export class MoonanDatabase {
       .map((row) => ({ id: row.id, type: row.type, occurredAt: Number(row.occurred_at), text: row.text, data: json(row.data_json) }));
   }
 
-  createTimer(kind: "idle" | "alarm", dueAt: number, payload: Record<string, unknown> = {}): string {
+  createTimer(kind: TimerKind, dueAt: number, payload: Record<string, unknown> = {}): string {
     const id = randomUUID();
     this.sqlite.prepare("INSERT INTO timers(id,kind,due_at,payload_json,state,created_at) VALUES(?,?,?,?,?,?)")
       .run(id, kind, dueAt, JSON.stringify(payload), "pending", now());
     return id;
   }
 
-  claimDueTimers(timestamp = now()): Array<{ id: string; kind: "idle" | "alarm"; dueAt: number; payload: Record<string, unknown> }> {
+  claimDueTimers(timestamp = now()): TimerRecord[] {
     return this.transaction(() => {
       const rows = this.sqlite.prepare("SELECT * FROM timers WHERE state='pending' AND due_at<=? ORDER BY due_at").all(timestamp) as any[];
       const update = this.sqlite.prepare("UPDATE timers SET state='fired' WHERE id=? AND state='pending'");
@@ -487,8 +509,16 @@ export class MoonanDatabase {
     });
   }
 
-  cancelPendingTimers(): void {
-    this.sqlite.prepare("UPDATE timers SET state='cancelled' WHERE state='pending'").run();
+  cancelPendingTimers(kind?: TimerKind): void {
+    if (kind) this.sqlite.prepare("UPDATE timers SET state='cancelled' WHERE state='pending' AND kind=?").run(kind);
+    else this.sqlite.prepare("UPDATE timers SET state='cancelled' WHERE state='pending'").run();
+  }
+
+  listPendingTimers(kind?: TimerKind): TimerRecord[] {
+    const rows = (kind
+      ? this.sqlite.prepare("SELECT * FROM timers WHERE state='pending' AND kind=? ORDER BY due_at").all(kind)
+      : this.sqlite.prepare("SELECT * FROM timers WHERE state='pending' ORDER BY due_at").all()) as any[];
+    return rows.map((row) => ({ id: row.id, kind: row.kind as TimerKind, dueAt: Number(row.due_at), payload: json(row.payload_json) }));
   }
 
   beginAgentRun(agent: "simulation" | "synthesis", trigger: string): string {

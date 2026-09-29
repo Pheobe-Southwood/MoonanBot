@@ -3,6 +3,7 @@ import { fauxAssistantMessage, fauxProvider, fauxThinking, fauxToolCall } from "
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RuntimeOrchestrator } from "../src/agents/orchestrator.js";
 import type { ChatPlatformAdapter, PlatformMessageEvent } from "../src/platforms/types.js";
+import type { ConversationTarget } from "../src/domain/types.js";
 import type { ProviderRegistry } from "../src/providers/registry.js";
 import { testDatabase } from "./helpers.js";
 
@@ -42,11 +43,20 @@ async function eventually(assertion: () => void, timeout = 2_000): Promise<void>
   }
 }
 
+const sevenTarget: ConversationTarget = { platform: "onebot", kind: "private", id: "7", name: "Seven" };
+
+function privateEvent(senderId: string, messageId: string, overrides: Partial<PlatformMessageEvent> = {}): PlatformMessageEvent {
+  return {
+    selfId: "bot", platformMessageId: messageId, target: { platform: "onebot", kind: "private", id: senderId, name: senderId },
+    senderId, senderName: senderId, occurredAt: Date.now(), content: "ping", segments: [], raw: {}, ...overrides,
+  };
+}
+
 describe("runtime orchestration with pi faux provider", () => {
   it("runs a multi-turn simulation, terminates in sleep, and synthesizes memory", async () => {
     const { db, faux, providers } = configured();
     faux.setResponses([
-      fauxAssistantMessage([fauxThinking("先查看可用动作。"), fauxToolCall("list_available_actions", {})], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxThinking("先打开手机看看。"), fauxToolCall("perform_action", { action: "open_phone" })], { stopReason: "toolUse" }),
       fauxAssistantMessage([fauxThinking("角色需要休息。"), fauxToolCall("perform_action", { action: "sleep", durationMinutes: 30 })], { stopReason: "toolUse" }),
       fauxAssistantMessage([
         fauxToolCall("manage_memory", { operation: "upsert", id: "sleep-memory", occurredAt: Date.now(), summary: "主动安排了一次休息" }),
@@ -63,19 +73,21 @@ describe("runtime orchestration with pi faux provider", () => {
     const trace = db.listAgentRuns(20).flatMap((run) => db.listAgentMessages(run.id));
     expect(trace.some((message) => message.role === "reasoning")).toBe(true);
     expect(trace.some((message) => message.role === "tool" && message.name === "perform_action")).toBe(true);
+    expect(trace.some((message) => message.role === "user" && message.content.includes("接下来可用的动作"))).toBe(true);
   });
 
   it("corrects two missing-action turns and then forces a safe idle", async () => {
     const { db, faux, providers } = configured();
     faux.setResponses([
-      fauxAssistantMessage("今天可以做点什么。"),
-      fauxAssistantMessage("再观察一下。"),
-      fauxAssistantMessage("暂时没有决定。"),
+      fauxAssistantMessage("纯文本回应一。"),
+      fauxAssistantMessage("纯文本回应二。"),
+      fauxAssistantMessage("纯文本回应三。"),
     ]);
     const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
     cleanups.push(() => { void orchestrator.close(); });
     await orchestrator.startBot();
-    expect(db.getRuntime()).toMatchObject({ mode: "entertaining", health: "degraded", lastError: "推演 Agent 连续未安排下一步行动" });
+    const runtime = db.getRuntime();
+    expect(runtime).toMatchObject({ mode: "entertaining", health: "degraded", lastError: "推演 Agent 连续未安排下一步行动" });
     expect(db.eventsSince(0).some((event) => event.type === "system_warning")).toBe(true);
     expect(faux.state.callCount).toBe(3);
   });
@@ -83,20 +95,68 @@ describe("runtime orchestration with pi faux provider", () => {
   it("corrects a run that acted but scheduled no continuation, then accepts an idle", async () => {
     const { db, faux, providers } = configured();
     faux.setResponses([
-      fauxAssistantMessage([fauxThinking("先打开手机看看。"), fauxToolCall("perform_action", { action: "open_phone" })], { stopReason: "toolUse" }),
-      fauxAssistantMessage("看完手机了，没有什么要做的。"),
-      fauxAssistantMessage([fauxToolCall("perform_action", { action: "idle", durationMinutes: 30, activity: "整理桌面" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "open_phone" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("我查看手机后直接停下了，没有安排唤醒。"),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "idle", durationMinutes: 30 })], { stopReason: "toolUse" }),
     ]);
     const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
     cleanups.push(() => { void orchestrator.close(); });
     await orchestrator.startBot();
+    expect(faux.state.callCount).toBe(3);
+    const trace = db.listAgentRuns(20).flatMap((run) => db.listAgentMessages(run.id));
+    const corrections = trace.filter((message) => message.role === "user" && message.content.includes("本轮动作已结束"));
+    expect(corrections).toHaveLength(1);
     expect(db.getRuntime()).toMatchObject({ mode: "entertaining", health: "healthy" });
     expect(db.getRuntime().nextWakeAt).not.toBeNull();
-    expect(faux.state.callCount).toBe(3);
-    const run = db.listAgentRuns(10, "simulation")[0]!;
-    const corrections = db.listAgentMessages(run.id).filter((message) => message.role === "user" && message.content.includes("没有安排下一步行动"));
-    expect(corrections.length).toBeGreaterThanOrEqual(1);
-    expect(corrections.every((message) => message.content.includes("本轮动作已结束"))).toBe(true);
+  });
+
+  it("wakes from a seconds wait through the durable timer loop", async () => {
+    const { db, faux, providers } = configured();
+    const settings = db.getSettings();
+    settings.value.simulation.waitMinSeconds = 1;
+    db.updateSettings(settings.value, settings.version);
+    db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "normal", isFriend: true });
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "open_phone" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "view_contacts" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "open_chat", kind: "private", targetId: "7" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "wait_messages", durationSeconds: 1 })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "sleep", durationMinutes: 30 })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("finish_synthesis", { summary: "等待之后入睡。" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("归纳完成。"),
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.startBot();
+    expect(db.getRuntime().mode).toBe("waiting");
+    expect(db.getRuntime().phone).toMatchObject({ kind: "chat" });
+    orchestrator.start();
+    await eventually(() => expect(db.getRuntime().mode).toBe("sleeping"), 10_000);
+    expect(db.eventsSince(0).some((event) => event.type === "wait_elapsed")).toBe(true);
+    const wakeRun = db.listAgentRuns(20).flatMap((run) => db.listAgentMessages(run.id));
+    expect(wakeRun.some((message) => message.role === "user" && message.content.includes("等待时间已到"))).toBe(true);
+  });
+
+  it("counts silent messages toward a count-mode wait and wakes at the target count", async () => {
+    const { db, faux, providers } = configured();
+    db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "do_not_disturb", isFriend: true });
+    db.setRuntime({ mode: "waiting", phone: { kind: "chat", target: sevenTarget } });
+    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "count", count: 2, since: Date.now() - 1 });
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "sleep", durationMinutes: 30 })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("finish_synthesis", { summary: "无。" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("完成。"),
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.handleIncoming(privateEvent("7", "m1", { target: sevenTarget, content: "quiet one" }));
+    expect(db.getRuntime().mode).toBe("waiting");
+    await orchestrator.handleIncoming(privateEvent("7", "m2", { target: sevenTarget, content: "quiet two" }));
+    await eventually(() => expect(db.getRuntime().mode).toBe("sleeping"));
+    expect(db.listPendingTimers("wait")).toHaveLength(0);
+    const waitEvents = db.eventsSince(0).filter((event) => event.type === "wait_elapsed");
+    expect(waitEvents[0]?.text).toContain("等待的 2 条新消息已到达");
+    expect(waitEvents[0]?.text).toContain("quiet two");
   });
 
   it("retries failed synthesis batches and compacts old context only after commit", async () => {
@@ -125,18 +185,100 @@ describe("runtime orchestration with pi faux provider", () => {
     const fixture = testDatabase();
     cleanups.push(fixture.cleanup);
     fixture.db.setRuntime({ mode: "awake" });
-    fixture.db.upsertContact({ platform: "onebot", id: "normal", name: "Normal", aliases: [], summary: "", importance: "normal", isFriend: true });
-    fixture.db.upsertContact({ platform: "onebot", id: "plus", name: "Plus", aliases: [], summary: "", importance: "priority_plus", isFriend: true });
+    fixture.db.upsertContact({ platform: "onebot", id: "normal", name: "normal", aliases: [], summary: "", importance: "normal", isFriend: true });
+    fixture.db.upsertContact({ platform: "onebot", id: "plus", name: "plus", aliases: [], summary: "", importance: "priority_plus", isFriend: true });
     const orchestrator = new RuntimeOrchestrator(fixture.db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
     cleanups.push(() => { void orchestrator.close(); });
-    const incoming = (id: string, messageId: string): PlatformMessageEvent => ({
-      selfId: "bot", platformMessageId: messageId, target: { platform: "onebot", kind: "private", id, name: id },
-      senderId: id, senderName: id, occurredAt: Date.now(), content: "ping", segments: [], raw: {},
-    });
-    await orchestrator.handleIncoming(incoming("normal", "1"));
-    await orchestrator.handleIncoming(incoming("plus", "2"));
+    await orchestrator.handleIncoming(privateEvent("normal", "1"));
+    await orchestrator.handleIncoming(privateEvent("plus", "2"));
     await vi.advanceTimersByTimeAsync(5_001);
     const signals = fixture.db.eventsSince(0).filter((event) => ["phone_alarm", "phone_ring", "phone_vibration"].includes(event.type));
     expect(signals.map((event) => event.type)).toEqual(["phone_alarm"]);
+  });
+
+  it("ends a wait early on any notification and merges the watched messages", async () => {
+    vi.useFakeTimers();
+    const fixture = testDatabase();
+    cleanups.push(fixture.cleanup);
+    const db = fixture.db;
+    db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "normal", isFriend: true });
+    db.upsertContact({ platform: "onebot", id: "9", name: "Nine", aliases: [], summary: "", importance: "priority_plus", isFriend: true });
+    db.setRuntime({ mode: "waiting", phone: { kind: "chat", target: sevenTarget } });
+    db.insertMessage({
+      id: "watched-1", platformMessageId: "w1", target: sevenTarget, senderId: "7", senderName: "Seven",
+      direction: "incoming", content: "盯着屏幕时来的消息", segments: [], occurredAt: Date.now(), observedAt: Date.now(),
+      deliveryStatus: "received", readAt: null,
+    });
+    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "count", count: 5, since: Date.now() - 1 });
+    const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.handleIncoming(privateEvent("9", "loud"));
+    await vi.advanceTimersByTimeAsync(5_001);
+    const alarm = db.eventsSince(0).find((event) => event.type === "phone_alarm");
+    expect(alarm?.text).toContain("手机闹钟响了");
+    expect(alarm?.text).toContain("盯着屏幕时来的消息");
+    expect(db.listPendingTimers("wait")).toHaveLength(0);
+    expect(db.getRuntime().mode).toBe("awake");
+  });
+
+  it("drops platform echoes of the character's own messages", async () => {
+    const fixture = testDatabase();
+    cleanups.push(fixture.cleanup);
+    const db = fixture.db;
+    db.setRuntime({ mode: "awake", activeSelfId: "bot-self" });
+    const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.handleIncoming(privateEvent("bot-self", "echo-1", { target: sevenTarget, content: "echo" }));
+    expect(db.listMessages(sevenTarget, 10)).toHaveLength(0);
+    expect(db.eventsSince(0)).toHaveLength(0);
+    expect(db.listContacts()).toHaveLength(0);
+  });
+
+  it("notifies for group mentions by sender importance, including @all", async () => {
+    vi.useFakeTimers();
+    const fixture = testDatabase();
+    cleanups.push(fixture.cleanup);
+    const db = fixture.db;
+    db.setRuntime({ mode: "awake", activeSelfId: "me" });
+    const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    const group: ConversationTarget = { platform: "onebot", kind: "group", id: "g1", name: "Group" };
+    const groupEvent = (messageId: string, segments: unknown[]): PlatformMessageEvent => ({
+      selfId: "me", platformMessageId: messageId, target: group, senderId: "7", senderName: "Seven",
+      occurredAt: Date.now(), content: "hi", segments, raw: {},
+    });
+
+    await orchestrator.handleIncoming(groupEvent("1", [{ type: "text", data: { text: "hi" } }]));
+    await vi.advanceTimersByTimeAsync(5_001);
+    expect(db.eventsSince(0).filter((event) => event.type.startsWith("phone_"))).toHaveLength(0);
+
+    await orchestrator.handleIncoming(groupEvent("2", [{ type: "at", data: { qq: "me" } }]));
+    await vi.advanceTimersByTimeAsync(5_001);
+    expect(db.eventsSince(0).filter((event) => event.type === "phone_vibration")).toHaveLength(1);
+
+    await orchestrator.handleIncoming(groupEvent("3", [{ type: "at", data: { qq: "all" } }]));
+    await vi.advanceTimersByTimeAsync(5_001);
+    expect(db.eventsSince(0).filter((event) => event.type === "phone_vibration")).toHaveLength(2);
+  });
+
+  it("cancels the pending wait when the operator wakes the character", async () => {
+    const fixture = testDatabase();
+    cleanups.push(fixture.cleanup);
+    const db = fixture.db;
+    db.setRuntime({ mode: "waiting", phone: { kind: "chat", target: sevenTarget } });
+    db.insertMessage({
+      id: "watched-2", platformMessageId: "w2", target: sevenTarget, senderId: "7", senderName: "Seven",
+      direction: "incoming", content: "等待期间来的消息", segments: [], occurredAt: Date.now(), observedAt: Date.now(),
+      deliveryStatus: "received", readAt: null,
+    });
+    db.createTimer("wait", Date.now() + 60_000, { watch: sevenTarget, mode: "seconds", seconds: 30, since: Date.now() - 1 });
+    const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.wakeBot();
+    expect(db.listPendingTimers("wait")).toHaveLength(0);
+    expect(db.getRuntime().mode).toBe("awake");
+    const wake = db.eventsSince(0).find((event) => event.type === "operator_wake");
+    expect(wake?.text).toContain("你被唤醒了");
+    expect(wake?.text).toContain("等待期间来的消息");
   });
 });

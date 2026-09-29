@@ -1,11 +1,12 @@
-export type RuntimeMode = "paused" | "awake" | "entertaining" | "sleeping";
+export type RuntimeMode = "paused" | "awake" | "entertaining" | "sleeping" | "waiting";
 export type RuntimeHealth = "healthy" | "degraded" | "faulted";
 export type Importance = "priority_plus" | "priority" | "normal" | "do_not_disturb" | "no_push";
 export type TargetKind = "private" | "group";
 export type PhoneState =
   | { kind: "closed" }
   | { kind: "home" }
-  | { kind: "chat"; target: ConversationTarget };
+  | { kind: "contacts" }
+  | { kind: "chat"; target: ConversationTarget; cursor?: number | null };
 
 export interface ConversationTarget {
   platform: "onebot";
@@ -88,6 +89,7 @@ export type WorldEventType =
   | "phone_vibration"
   | "idle_elapsed"
   | "alarm_elapsed"
+  | "wait_elapsed"
   | "action_completed"
   | "message_observed"
   | "roster_sync"
@@ -138,6 +140,12 @@ export interface AppSettings {
     priorityWakeProbability: number;
     chatPreviewMessages: number;
     historyMaxMessages: number;
+    waitMinSeconds: number;
+    waitMaxSeconds: number;
+    waitMinMessages: number;
+    waitMaxMessages: number;
+    waitMessageTimeoutSeconds: number;
+    contactListMaxEntries: number;
     messageIntervalMs: number;
     maxMessageCharacters: number;
     maxSendPayloadBytes: number;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChatPlatformAdapter } from "../src/platforms/types.js";
 import { buildSimulationTools } from "../src/agents/simulation-tools.js";
 import { buildSynthesisTools } from "../src/agents/synthesis-tools.js";
+import type { ConversationTarget } from "../src/domain/types.js";
 import { testDatabase, textOf } from "./helpers.js";
 
 function platform(send: ChatPlatformAdapter["sendText"] = async () => ({ platformMessageId: "sent-1" })): ChatPlatformAdapter {
@@ -15,37 +16,137 @@ async function execute(tool: any, params: Record<string, unknown>, signal?: Abor
   return await tool.execute("call", params, signal);
 }
 
+const seven = { platform: "onebot" as const, id: "7", name: "Seven", aliases: [] as string[], summary: "", importance: "normal" as const, isFriend: true };
+const sevenTarget: ConversationTarget = { platform: "onebot", kind: "private", id: "7", name: "Seven" };
+
 describe("simulation tools", () => {
+  it("exposes only perform_action and appends the action menu to results and errors", async () => {
+    const fixture = testDatabase();
+    try {
+      const tools = buildSimulationTools(fixture.db, platform());
+      expect(tools.map((tool) => tool.name)).toEqual(["perform_action"]);
+      const opened = await execute(tools[0]!, { action: "open_phone" });
+      expect(textOf(opened)).toContain("接下来可用的动作:");
+      expect(textOf(opened)).toContain("view_contacts");
+      await expect(execute(tools[0]!, { action: "send_messages", messages: ["no"] })).rejects.toThrow(/当前状态不能执行 send_messages/);
+      await expect(execute(tools[0]!, { action: "send_messages", messages: ["no"] })).rejects.toThrow(/接下来可用的动作/);
+    } finally { fixture.cleanup(); }
+  });
+
   it("independently rejects illegal phone operations and duration bounds", async () => {
     const fixture = testDatabase();
     try {
-      const [, perform] = buildSimulationTools(fixture.db, platform());
-      await expect(execute(perform, { action: "send_messages", messages: ["no"] })).rejects.toThrow(/当前状态/);
+      const [perform] = buildSimulationTools(fixture.db, platform());
       await expect(execute(perform, { action: "idle", durationMinutes: 29 })).rejects.toThrow(/30/);
-      const sleeping = await execute(perform, { action: "sleep", durationMinutes: 30 });
-      expect(sleeping.terminate).toBe(true);
-      expect(fixture.db.getRuntime().mode).toBe("sleeping");
+      await execute(perform!, { action: "open_phone" });
+      const idled = await execute(perform!, { action: "idle", durationMinutes: 30 });
+      expect(idled.terminate).toBe(true);
+      expect(fixture.db.getRuntime().mode).toBe("entertaining");
+      expect(fixture.db.getRuntime().phone.kind).toBe("closed");
       expect(fixture.db.getRuntime().nextWakeAt).toBeTypeOf("number");
     } finally { fixture.cleanup(); }
   });
 
-  it("opens the phone and chat, loads local history, sends in order, and closes", async () => {
+  it("closes the phone when sleeping", async () => {
+    const fixture = testDatabase();
+    try {
+      const [perform] = buildSimulationTools(fixture.db, platform());
+      await execute(perform!, { action: "open_phone" });
+      const sleeping = await execute(perform!, { action: "sleep", durationMinutes: 30 });
+      expect(sleeping.terminate).toBe(true);
+      expect(fixture.db.getRuntime().mode).toBe("sleeping");
+      expect(fixture.db.getRuntime().phone.kind).toBe("closed");
+      expect(fixture.db.listPendingTimers("alarm")).toHaveLength(1);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("walks the phone state machine, marks chats read, and pages through history", async () => {
+    const fixture = testDatabase();
+    try {
+      fixture.db.upsertContact(seven);
+      for (const [index, occurredAt] of [100, 200, 300].entries()) {
+        fixture.db.insertMessage({
+          id: `m-${index}`, platformMessageId: `p-${index}`, target: sevenTarget, senderId: "7", senderName: "Seven",
+          direction: "incoming", content: `msg ${index}`, segments: [], occurredAt, observedAt: occurredAt,
+          deliveryStatus: "received", readAt: null,
+        });
+      }
+      const [perform] = buildSimulationTools(fixture.db, platform());
+
+      const home = textOf(await execute(perform!, { action: "open_phone" }));
+      expect(home).toContain("当前手机状态：主页");
+      expect(home).toContain("有一些未读消息");
+      expect(fixture.db.getRuntime().phone.kind).toBe("home");
+
+      // the contact list cannot be skipped
+      await expect(execute(perform!, { action: "open_chat", kind: "private", targetId: "7" })).rejects.toThrow(/当前状态不能执行 open_chat/);
+
+      const contacts = textOf(await execute(perform!, { action: "view_contacts" }));
+      expect(contacts).toContain("当前手机状态：好友和群聊列表");
+      expect(contacts).toContain("Seven（7）（有3条未读消息）");
+      expect(fixture.db.getRuntime().phone.kind).toBe("contacts");
+
+      await expect(execute(perform!, { action: "open_chat", kind: "private", targetId: "404" })).rejects.toThrow(/未知联系人或群聊/);
+
+      const chat = textOf(await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" }));
+      expect(chat).toContain("有 3 条新消息");
+      expect(chat).toContain("msg 2");
+      expect(fixture.db.unreadSummary(true)).toHaveLength(0);
+      expect(fixture.db.getRuntime().phone).toMatchObject({ kind: "chat", cursor: 100 });
+
+      fixture.db.insertMessage({
+        id: "m-old", platformMessageId: "p-old", target: sevenTarget, senderId: "7", senderName: "Seven",
+        direction: "incoming", content: "older", segments: [], occurredAt: 50, observedAt: 50,
+        deliveryStatus: "received", readAt: Date.now(),
+      });
+      const history = textOf(await execute(perform!, { action: "load_history", count: 10 }));
+      expect(history).toContain("older");
+      expect(fixture.db.getRuntime().phone).toMatchObject({ kind: "chat", cursor: 50 });
+      expect(textOf(await execute(perform!, { action: "load_history", count: 10 }))).toContain("已经到最早的本地已观测消息");
+
+      await execute(perform!, { action: "close_phone" });
+      expect(fixture.db.getRuntime().phone.kind).toBe("closed");
+    } finally { fixture.cleanup(); }
+  });
+
+  it("folds long contact lists but keeps every unread entry", async () => {
+    const fixture = testDatabase();
+    try {
+      const settings = fixture.db.getSettings();
+      settings.value.simulation.contactListMaxEntries = 2;
+      fixture.db.updateSettings(settings.value, settings.version);
+      for (const id of ["a", "b", "c"]) {
+        fixture.db.upsertContact({ platform: "onebot", id, name: `User ${id}`, aliases: [], summary: "", importance: "normal", isFriend: true });
+      }
+      fixture.db.insertMessage({
+        id: "mc", platformMessageId: "pc", target: { platform: "onebot", kind: "private", id: "c", name: "User c" },
+        senderId: "c", senderName: "User c", direction: "incoming", content: "unread me", segments: [],
+        occurredAt: Date.now(), observedAt: Date.now(), deliveryStatus: "received", readAt: null,
+      });
+      const [perform] = buildSimulationTools(fixture.db, platform());
+      await execute(perform!, { action: "open_phone" });
+      const text = textOf(await execute(perform!, { action: "view_contacts" }));
+      expect(text).toContain("User c");
+      expect(text).toContain("有1条未读消息");
+      expect(text).toContain("另有 1 个无未读消息的好友/群聊未显示");
+    } finally { fixture.cleanup(); }
+  });
+
+  it("sends in order and records delivery", async () => {
     const fixture = testDatabase();
     const sent: string[] = [];
     try {
-      fixture.db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "normal", isFriend: true });
+      fixture.db.upsertContact(seven);
       const settings = fixture.db.getSettings();
       settings.value.simulation.messageIntervalMs = 0;
       fixture.db.updateSettings(settings.value, settings.version);
-      const [, perform] = buildSimulationTools(fixture.db, platform(async (_target, text) => { sent.push(text); return { platformMessageId: `p-${sent.length}` }; }));
-      expect(textOf(await execute(perform, { action: "open_phone" }))).toContain("当前时间");
-      await execute(perform, { action: "open_chat", kind: "private", targetId: "7" });
-      await execute(perform, { action: "send_messages", messages: ["one", "two"] });
+      const [perform] = buildSimulationTools(fixture.db, platform(async (_target, text) => { sent.push(text); return { platformMessageId: `p-${sent.length}` }; }));
+      await execute(perform!, { action: "open_phone" });
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
+      await execute(perform!, { action: "send_messages", messages: ["one", "two"] });
       expect(sent).toEqual(["one", "two"]);
-      expect(fixture.db.listMessages({ platform: "onebot", kind: "private", id: "7" }, 10).map((item) => item.deliveryStatus)).toEqual(["sent", "sent"]);
-      expect(textOf(await execute(perform, { action: "load_history", count: 9_999 }))).toContain("本地已观测历史");
-      await execute(perform, { action: "close_phone" });
-      expect(fixture.db.getRuntime().phone.kind).toBe("closed");
+      expect(fixture.db.listMessages(sevenTarget, 10).map((item) => item.deliveryStatus)).toEqual(["sent", "sent"]);
     } finally { fixture.cleanup(); }
   });
 
@@ -53,23 +154,88 @@ describe("simulation tools", () => {
     const fixture = testDatabase();
     let calls = 0;
     try {
-      const [, perform] = buildSimulationTools(fixture.db, platform(async () => { calls += 1; throw new Error("link lost"); }));
-      await execute(perform, { action: "open_phone" });
-      await execute(perform, { action: "open_chat", kind: "private", targetId: "7" });
-      await expect(execute(perform, { action: "send_messages", messages: ["once"] })).rejects.toThrow("发送结果未知");
+      fixture.db.upsertContact(seven);
+      const [perform] = buildSimulationTools(fixture.db, platform(async () => { calls += 1; throw new Error("link lost"); }));
+      await execute(perform!, { action: "open_phone" });
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
+      await expect(execute(perform!, { action: "send_messages", messages: ["once"] })).rejects.toThrow("发送结果未知");
       expect(calls).toBe(1);
-      expect(fixture.db.listMessages({ platform: "onebot", kind: "private", id: "7" }, 10)[0]?.deliveryStatus).toBe("unknown");
+      expect(fixture.db.listMessages(sevenTarget, 10)[0]?.deliveryStatus).toBe("unknown");
     } finally { fixture.cleanup(); }
   });
 
   it("enforces per-message and aggregate payload limits", async () => {
     const fixture = testDatabase();
     try {
-      await execute(buildSimulationTools(fixture.db, platform())[1], { action: "open_phone" });
-      const perform = buildSimulationTools(fixture.db, platform())[1];
-      await execute(perform, { action: "open_chat", kind: "private", targetId: "7" });
-      await expect(execute(perform, { action: "send_messages", messages: ["x".repeat(2_001)] })).rejects.toThrow(/2000/);
-      await expect(execute(perform, { action: "send_messages", messages: Array(140).fill("界".repeat(1_000)) })).rejects.toThrow(/256 KiB/);
+      fixture.db.upsertContact(seven);
+      const [perform] = buildSimulationTools(fixture.db, platform());
+      await execute(perform!, { action: "open_phone" });
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
+      await expect(execute(perform!, { action: "send_messages", messages: ["x".repeat(2_001)] })).rejects.toThrow(/2000/);
+      await expect(execute(perform!, { action: "send_messages", messages: Array(140).fill("界".repeat(1_000)) })).rejects.toThrow(/256 KiB/);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("waits inside an open chat and terminates the run", async () => {
+    const fixture = testDatabase();
+    try {
+      fixture.db.upsertContact(seven);
+      const [perform] = buildSimulationTools(fixture.db, platform());
+      await execute(perform!, { action: "open_phone" });
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
+
+      await expect(execute(perform!, { action: "wait_messages", durationSeconds: 10, messageCount: 2 })).rejects.toThrow(/二选一/);
+      await expect(execute(perform!, { action: "wait_messages", durationSeconds: 61 })).rejects.toThrow(/60/);
+      await expect(execute(perform!, { action: "wait_messages", messageCount: 6 })).rejects.toThrow(/5/);
+
+      const waited = await execute(perform!, { action: "wait_messages", durationSeconds: 10 });
+      expect(waited.terminate).toBe(true);
+      const runtime = fixture.db.getRuntime();
+      expect(runtime.mode).toBe("waiting");
+      expect(runtime.phone).toMatchObject({ kind: "chat" });
+      expect(runtime.nextWakeAt).toBeTypeOf("number");
+      const timers = fixture.db.listPendingTimers("wait");
+      expect(timers).toHaveLength(1);
+      expect(timers[0]!.payload).toMatchObject({ mode: "seconds", seconds: 10 });
+      expect((timers[0]!.payload.watch as ConversationTarget).id).toBe("7");
+
+      // a second wait replaces the first timer
+      await execute(perform!, { action: "wait_messages", messageCount: 3 });
+      const replaced = fixture.db.listPendingTimers("wait");
+      expect(replaced).toHaveLength(1);
+      expect(replaced[0]!.payload).toMatchObject({ mode: "count", count: 3 });
+      expect(replaced[0]!.dueAt - Date.now()).toBeGreaterThan(170_000);
+    } finally { fixture.cleanup(); }
+  });
+
+  it("locks set_contact_importance to the contact list or the friend's own chat", async () => {
+    const fixture = testDatabase();
+    try {
+      fixture.db.upsertContact(seven);
+      fixture.db.upsertContact({ platform: "onebot", id: "8", name: "Eight", aliases: [], summary: "", importance: "normal", isFriend: true });
+      fixture.db.upsertGroup({ platform: "onebot", id: "g1", name: "Group", summary: "" });
+      const [perform] = buildSimulationTools(fixture.db, platform());
+
+      await expect(execute(perform!, { action: "set_contact_importance", contactId: "7", importance: "priority" })).rejects.toThrow(/当前状态/);
+      await execute(perform!, { action: "open_phone" });
+      await expect(execute(perform!, { action: "set_contact_importance", contactId: "7", importance: "priority" })).rejects.toThrow(/当前状态/);
+
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "set_contact_importance", contactId: "8", importance: "priority_plus" });
+      expect(fixture.db.getContact("8")?.importance).toBe("priority_plus");
+      await expect(execute(perform!, { action: "set_contact_importance", contactId: "404", importance: "priority" })).rejects.toThrow(/未知联系人/);
+
+      await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
+      await expect(execute(perform!, { action: "set_contact_importance", contactId: "8", importance: "normal" })).rejects.toThrow(/只能设置该好友/);
+      await execute(perform!, { action: "set_contact_importance", contactId: "7", importance: "do_not_disturb" });
+      expect(fixture.db.getContact("7")?.importance).toBe("do_not_disturb");
+
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "open_chat", kind: "group", targetId: "g1" });
+      await expect(execute(perform!, { action: "set_contact_importance", contactId: "7", importance: "normal" })).rejects.toThrow(/当前状态/);
     } finally { fixture.cleanup(); }
   });
 });
