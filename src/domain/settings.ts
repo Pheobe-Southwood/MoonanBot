@@ -23,7 +23,7 @@ function roleOr(value: unknown, fallback: OneBotRole): OneBotRole {
   return (OUTBOUND_ROLES as readonly string[]).includes(role) ? role as OneBotRole : fallback;
 }
 
-const THINKING_LEVELS: readonly AgentSelection["thinkingLevel"][] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const THINKING_LEVELS: readonly AgentSelection["thinkingLevel"][] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Coerces one stored agent selection so missing or corrupt fields fall back to the default slot shape. */
 function normalizeSelection(value: unknown, fallback: AgentSelection): AgentSelection {

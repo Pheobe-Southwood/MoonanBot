@@ -1,35 +1,31 @@
-# MoonanBot v0.0.1-rc.7
+# MoonanBot v0.0.1-rc.8
 
-This release candidate gives the character sight: inbound QQ images are downloaded the moment they are observed, understood through a dual path keyed by each model's real capability, and described once for models that cannot see.
+This release candidate fixes two silent capability bugs that made custom-provider models — the ones behind a self-hosted OpenAI-compatible proxy — unable to use the very features the operator turned on: forced image input never reached the wire, and a selected thinking level was dropped before it could be sent. It also adds the `max` reasoning level.
 
-Images used to become a `[图片：file]` placeholder and nothing else. Now every consumer resolves its Image Input Capability at render time — from the pi-ai catalog's `model.input`, or from the new per-slot `forceImageInput` override when a catalog under-declares. Image-capable consumers receive the real image content inline, newest-first, capped by `media.maxInjectedImages` (default 10); overflow degrades to description text with a note. Image-blind consumers receive `[图片：description]` text produced by the new Vision Agent, generated lazily on first need and cached permanently on the media row, so one image is described at most once no matter how many blind consumers or restarts follow (ADR-0008).
+**Forced image input now actually sends images.** In RC.7 the per-slot `forceImageInput` toggle only relaxed MoonanBot's own capability gate; the pi-ai serialization layer still checked the model record's `input` modalities and, finding no `"image"`, replaced every image with the literal text `(image omitted: model does not support images)`. Custom-provider models are always fabricated as `input:["text"]`, so a forced slot's character was told, in plain text, that the image had been omitted — exactly the "白蒙蒙的雾" symptom. Slot selection now patches the pi-ai Model record before serialization, so a forced slot sends real `image_url` data URIs.
 
-The Vision Agent is the third mind beside Simulation and Synthesis: its own provider, model, thinking level, and an editable, versioned system prompt with no required placeholders. Its calls appear in the Activity page as `vision` runs with traces, and the prompt travels in character export/import — bundles without it stay importable.
+**Custom-provider thinking levels now reach the provider.** Remote-fetched custom models are fabricated with `reasoning:false`, which made pi-ai clamp any selected level down to `off` and send no `reasoning_effort` at all. Even with reasoning enabled, `xhigh` and `max` were downgraded to `high` unless the model carried an explicit `thinkingLevelMap`. For custom providers, a non-`off` slot level now forces `reasoning:true` and maps `xhigh`/`max` to their verbatim wire values, so the level you pick is the level sent.
 
-Because QQ image URLs expire quickly, bytes are downloaded at observation time: segment URL first, the OneBot `get_image` API as fallback, with the format decided by magic bytes (jpeg/png/gif/webp/bmp), two concurrent downloads, and failures degrading to placeholders instead of breaking renders. Bytes live in the SQLite `message_media` table under a TTL (`media.byteTtlDays`, default 7) and are purged daily while descriptions survive; pending downloads re-enqueue after a restart. Bytes are part of full database backups — size them accordingly.
+**New `max` thinking level.** pi-ai and pi-agent-core already model a `max` level above `xhigh`; MoonanBot now exposes it in the domain type, settings validation, and the WebUI thinking-level selector for every slot.
 
-Persisted agent state never carries base64: image blocks are replaced with `[图片]` markers when a run ends, and the archive threshold estimates a flat 1500 tokens per image block. The new validated settings group `media` (`enabled`, `downloadTimeoutMs`, `byteTtlDays`, `maxInjectedImages`) has its own WebUI card. Readiness gained non-blocking warnings — a blind model with no usable Vision Agent surfaces on the Overview page but never prevents start.
+Catalog (built-in) models are untouched: pi-ai's authoritative metadata still governs them, reasoning is never force-enabled on a catalog model (which would 400 on providers that genuinely lack it), and `forceImageInput` remains the only image override. The WebUI now shows a hint on custom endpoints that the selected thinking level is sent verbatim as `reasoning_effort` — choose `off` to send nothing.
 
-In the WebUI, the Agents page becomes three tabs; model dropdowns mark image-capable models with 🖼, a capability pill states whether the selected model sees images natively or by force, and the force toggle appears exactly when the catalog says text-only. Activity labels `vision` runs, and providers now expose each model's input modalities through the API.
+**Behaviour change to note.** Because the default slot thinking level is `medium`, custom-provider slots that previously sent no `reasoning_effort` (it was silently dropped) will now send `reasoning_effort:"medium"` after this upgrade. If your proxy rejects that parameter, set the slot's thinking level to `off`. Likewise, whether a proxy forwards `image_url` data URIs and `reasoning_effort` to the upstream model is a server-side concern: after this fix MoonanBot sends them correctly, and a proxy that refuses will now surface a visible error instead of a silent omission.
 
-Upgrading from RC.6 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database. The schema change is additive (`message_media`), settings normalize without migration, and the vision slot starts unconfigured — until it is configured (or a blind slot is forced), blind consumers keep seeing the old placeholders.
-
-The release still supports one character, one operator, and one OneBot account, and still sends text only. Audio, video, files, and unsupported segments remain textual placeholders and are not downloaded.
+Upgrading from RC.7 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database. There is no schema change and no settings migration — `max` simply becomes an accepted level.
 
 ---
 
-这是 MoonanBot v0.0.1 的第七个候选版本，让角色拥有了视觉：入站 QQ 图片在观测瞬间即被下载，按每个模型的真实能力走双通道理解，且对看不见图的模型只描述一次、永久缓存。
+这是 MoonanBot v0.0.1 的第八个候选版本，修复了两个让自定义供应商模型（自建 OpenAI 兼容代理后面的模型）无法使用运营者已开启功能的静默能力 Bug：强制图片输入从未真正发出，选定的思考等级在发送前就被丢弃；同时新增了 `max` 推理等级。
 
-图片过去只会变成 `[图片：file]` 占位符。现在每个消费者在渲染时解析自己的图片输入能力——以 pi-ai 目录的 `model.input` 为准，目录漏报时可以用新的按槽位 `forceImageInput` 强制覆盖。支持图片输入的消费者直接收到原图内容，按时间倒序、受 `media.maxInjectedImages`（默认 10）限制；超出上限的图片降级为文字描述并附注说明。不支持图片的消费者收到 `[图片：描述]` 文本，由新的图片识别 Agent 在首次需要时惰性生成，并永久缓存在媒体行上——无论多少盲模型消费者、无论重启多少次，一张图最多描述一次（ADR-0008）。
+**强制图片输入现在真的会发送图片。** 在 RC.7 中，按槽位的 `forceImageInput` 开关只放开了 MoonanBot 自己的能力门；pi-ai 序列化层仍会检查模型记录的 `input` 模态，发现没有 `"image"` 后，把每张图片替换成字面文本 `(image omitted: model does not support images)`。自定义供应商模型总是被构造为 `input:["text"]`，所以被强制的槽位里，角色会用纯文本被告知"图片已被省略"——正是那层"白蒙蒙的雾"。现在槽位选择会在序列化前修补 pi-ai 的 Model 记录，被强制的槽位会发送真正的 `image_url` data URI。
 
-图片识别 Agent 是与推演、归纳并列的第三个心智：独立的提供商、模型、思考等级，以及可编辑、带版本的系统提示词（无必需占位符）。它的调用以 `vision` 运行出现在活动页并带完整轨迹；提示词随角色包导出/导入，不含它的旧角色包仍可导入。
+**自定义供应商的思考等级现在能送达供应商。** 远程拉取的自定义模型被构造为 `reasoning:false`，这让 pi-ai 把任何选定等级钳到 `off`，完全不发送 `reasoning_effort`。即使启用了推理，`xhigh` 和 `max` 在缺少显式 `thinkingLevelMap` 时也会被降到 `high`。对于自定义供应商，非 `off` 的槽位等级现在会强制 `reasoning:true`，并把 `xhigh`/`max` 映射为其原样的 wire 值，于是你选的等级就是发出的等级。
 
-QQ 图片 URL 过期很快，因此字节在观测时立即下载：优先分段 URL，失败回退 OneBot `get_image` API，格式由 magic bytes 判定（jpeg/png/gif/webp/bmp），并发上限 2，任何失败都降级为占位符而不影响渲染。字节存于 SQLite 新表 `message_media`，按 TTL（`media.byteTtlDays`，默认 7 天）每日清理，描述永久保留；重启后未完成的下载自动续传。字节会计入完整数据库备份的体积，请据此规划。
+**新增 `max` 思考等级。** pi-ai 与 pi-agent-core 本就在 `xhigh` 之上建模了 `max` 等级；MoonanBot 现在在每个槽位的域类型、设置校验与 WebUI 思考等级选择器中暴露它。
 
-持久化的 Agent 状态永不携带 base64：运行结束时图片块被替换为 `[图片]` 标记，归档阈值按每张图固定 1500 token 估算。新增经过校验的 `media` 设置组（`enabled`、`downloadTimeoutMs`、`byteTtlDays`、`maxInjectedImages`），WebUI 有独立卡片。就绪检查新增非阻塞警告——盲模型没有可用的图片识别 Agent 时会在总览页提示，但绝不阻止启动。
+目录（内置）模型不受影响：仍以 pi-ai 的权威元数据为准，绝不在目录模型上强制启用推理（那会让真正不支持的供应商返回 400），`forceImageInput` 仍是唯一的图片覆盖手段。WebUI 现在会在自定义端点上提示：所选思考等级会原样以 `reasoning_effort` 发送——选 `off` 则不发送。
 
-WebUI 的 Agents 页变为三个标签；模型下拉为支持图片的模型加 🖼 标记，能力 Pill 说明当前模型是原生支持还是被强制启用，强制开关只在目录声明纯文本时出现。活动页标注 `vision` 运行，提供商 API 暴露每个模型的输入模态。
+**需注意的行为变化。** 由于槽位默认思考等级是 `medium`，此前不发送 `reasoning_effort`（被静默丢弃）的自定义供应商槽位，升级后会开始发送 `reasoning_effort:"medium"`。如果你的代理拒绝该参数，请把该槽位的思考等级设为 `off`。同样，代理是否会把 `image_url` data URI 与 `reasoning_effort` 转发给上游模型属于服务器侧行为：修复后 MoonanBot 会正确发送它们，拒绝的代理现在会显式报错，而不再静默省略。
 
-从 RC.6 升级保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。表结构变更为纯新增（`message_media`），设置无需迁移即可归一化；图片识别槽位初始未配置——在配置它（或强制某个盲槽位）之前，盲模型消费者仍看到旧占位符。
-
-本版本仍只支持单角色、单操作者、单 OneBot 账号，发送仍为纯文本；音频、视频、文件与不支持的分段仍只转为文字占位，不下载。
+从 RC.7 升级会保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。没有表结构变更，也无需迁移设置——`max` 只是成为一个被接受的等级。

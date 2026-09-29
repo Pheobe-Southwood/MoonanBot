@@ -153,6 +153,11 @@ export class ProviderRegistry {
     return this.modelsValue;
   }
 
+  /** Whether a provider id was registered from the operator's custom-provider records (fabricated capability metadata). */
+  isCustomProvider(providerId: string): boolean {
+    return this.db.listCustomProviders().some((item) => item.id === providerId);
+  }
+
   rebuild(): void {
     const models = createModels({ credentials: this.credentials, authContext });
     for (const provider of builtinProviders()) {
