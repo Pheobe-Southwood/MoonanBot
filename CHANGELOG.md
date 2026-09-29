@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Refactored the simulation action surface: removed `list_available_actions`; every world-event user message and every `perform_action` result (errors included) now ends with the currently available actions.
+- Reworked the phone state machine to Closed / Home / Contact List / Chat with new actions `view_contacts` and `wait_messages`; `open_chat` is only reachable from the Contact List and validates that the target is known; entering a chat marks it fully read and keeps a persisted Reading Cursor for `load_history` paging.
+- Added `wait_messages` as a third terminating action (new `waiting` runtime mode and `wait` timer kind): watch the open chat for 1–5 new messages (with a timeout, default 180 s) or for 5–60 seconds; any notification-level message from any conversation ends the wait early and merges the notification with the watched conversation's new messages; operator wake cancels the wait too.
+- `idle` and `sleep` now close the phone; `set_contact_importance` is restricted to the Contact List (any friend) or the private chat of that friend.
+- Group messages that @ the Character (`@all` included) now notify with the sender's Message Importance using the private-message signal mapping.
+- Dropped platform echoes of the Character's own messages: they are no longer re-stored as incoming, never trigger notifications, and never count toward waits.
+- New validated simulation settings: `waitMinSeconds`/`waitMaxSeconds`/`waitMinMessages`/`waitMaxMessages`/`waitMessageTimeoutSeconds`/`contactListMaxEntries`; `chatPreviewMessages` default 20→10 and `historyMaxMessages` default 200→50 (existing databases keep their stored values).
+- Simulation system prompt v0.0.2 with exact-match migration: untouched 0.0.1 default templates are replaced on upgrade, customised templates are preserved.
+- Fixed duplicated user-message entries in agent traces: world-event messages, continuation corrections, and synthesis inputs were recorded manually and again through the agent's `message_end` event.
+- WebUI: localised runtime mode and phone state (including `waiting` and Contact List) and exposed the new wait and contact-list settings.
+- Revised ADR-0006 (wait is a terminating action) and added ADR-0007 (action-menu appendix replaces the discovery tool).
+
 ## 0.0.1-rc.5 — 2026-09-28
 
 - Fixed the WebUI sending `Content-Type: application/json` on bodyless requests, which made Fastify reject Start/Pause/Wake, model refresh, prompt restore, logout, and every delete button with `400 FST_ERR_CTP_EMPTY_JSON_BODY`.

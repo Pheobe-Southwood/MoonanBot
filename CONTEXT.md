@@ -25,8 +25,20 @@ A validated thing the Character does through `perform_action`, including using t
 _Avoid_: Tool call
 
 **Terminating Action**:
-An Action — idle or sleep — that schedules the Character's next wake and ends the current simulation run. A run that ends without one receives a continuation correction.
+An Action — idle, sleep, or wait — that schedules the Character's next wake and ends the current simulation run. A run that ends without one receives a continuation correction.
 _Avoid_: Final message, exit tool
+
+**Phone State**:
+One of the four conditions of the Character's phone — Closed, Home, Contact List, or one open Chat. Actions are available only in the Phone State they require and may move the phone to another; Idle and Sleep always leave the phone Closed.
+_Avoid_: screen, page, runtime mode
+
+**Wait**:
+A Terminating Action that keeps the current Chat open and ends when the watched conversation has delivered enough new messages or when its time limit runs out, whichever happens first. A notification ends a Wait early, whether it comes from the watched conversation or another one.
+_Avoid_: long polling, hang
+
+**Reading Cursor**:
+The oldest message revealed in the open Chat, kept so that reading history continues upward from where the Character stopped, and cleared once that Chat is no longer open.
+_Avoid_: pagination token, offset
 
 ## Experience and memory
 
@@ -58,6 +70,10 @@ _Avoid_: Friend
 **Message Importance**:
 The Character's notification policy for one Contact: priority plus, priority, normal, do not disturb, or no push.
 _Avoid_: Relationship strength
+
+**Mention**:
+A group message that addresses the Character with @, including @ to everyone. A Mention notifies with the sender's Message Importance even when an unaddressed group message would stay silent.
+_Avoid_: at message
 
 **Conversation Target**:
 A platform-qualified private contact or group that can own messages and become the open phone conversation.
