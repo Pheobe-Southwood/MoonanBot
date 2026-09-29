@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-rc.6 — 2026-09-29
 
 - Refactored the simulation action surface: removed `list_available_actions`; every world-event user message and every `perform_action` result (errors included) now ends with the currently available actions.
 - Reworked the phone state machine to Closed / Home / Contact List / Chat with new actions `view_contacts` and `wait_messages`; `open_chat` is only reachable from the Contact List and validates that the target is known; entering a chat marks it fully read and keeps a persisted Reading Cursor for `load_history` paging.

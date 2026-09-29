@@ -1,27 +1,35 @@
-# MoonanBot v0.0.1-rc.5
+# MoonanBot v0.0.1-rc.6
 
-This release candidate fixes three defects found in daily use: bodyless WebUI requests, simulation runs that stall awake, and a group list that drifts away from QQ.
+This release candidate reworks the Simulation Agent's action surface: the phone becomes an explicit four-state machine, every message carries a current action menu, and the character learns to wait for replies.
 
-The WebUI attached `Content-Type: application/json` to every request, including the ones without a body. Fastify 5 rejects an empty body carrying that header, so Start, Pause, Wake, model refresh, prompt restore, logout, and every delete button failed with `400 FST_ERR_CTP_EMPTY_JSON_BODY` while saves — which do carry a body — kept working. The header is now sent only when a body exists, which repairs all of those controls at once.
+The agent used to expose two tools: `list_available_actions` to discover what the phone state permits, and `perform_action` to act. Discovery cost a full model round trip, its answer could be stale by the next call, and a rejected action told the model what failed but not what it could do instead. The discovery tool is gone: every world-event message and every action result — errors included — now ends with the currently available actions, rendered from the same state machine that validates execution (ADR-0007). The menu can never be stale or skipped, and narration and validation cannot drift apart.
 
-The Simulation Agent is designed to end every run with a Terminating Action: `idle` or `sleep`, the two actions that schedule the character's next wake. The old guard only noticed runs that performed no action at all, so a run that sent messages and then simply stopped left the character `awake` with no timer — silently stalled until somebody wrote to it. The guard now checks the ending state instead of the call count: a character still awake after the loop receives a continuation correction (worded for "no action at all" versus "acted but scheduled nothing"), up to the configured retries, before the existing forced thirty-minute idle fallback engages.
+The phone now moves through Closed → Home → Contact List → Chat. `view_contacts` opens the contact list with unread counts and folds long lists (entries with unread messages are always shown); `open_chat` is only reachable from the contact list and only for known contacts or groups; entering a chat marks it fully read and stores a Reading Cursor so `load_history` can page further upward without losing its place. `idle` and `sleep` close the phone, and `set_contact_importance` is restricted to the contact list or that friend's own private chat.
 
-Roster Sync used to only add friends and groups when a Platform Connection opened, never removing anything, so groups the character had left stayed in the social world and the WebUI group list drifted from QQ. The platform roster is now authoritative for membership: a successful sync with a non-empty group list deletes local groups the platform no longer reports (each deletion is recorded as a `roster_sync` event), an empty platform list skips pruning to protect against a misbehaving implementation, and contacts missing from the friend list keep their record but lose `isFriend`. Sync also runs every six hours while connected and on demand through `POST /api/v1/platform/sync`, surfaced as a "Sync roster / 同步名单" button on the Groups tab.
+`wait_messages` is the third Terminating Action (ADR-0006 revised). In an open chat the character can watch the conversation for 1–5 new messages (bounded by a timeout, 180 s by default) or simply wait for 5–60 seconds; the run ends in the new `waiting` mode with the chat kept open. Any notification-level message from any conversation ends the wait early, and the wake text merges the notification with whatever accumulated in the watched chat; elapsed time or a reached count wakes the character with a summary of what arrived. An operator wake cancels the wait and merges the new messages the same way.
 
-Upgrading from RC.4 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database.
+Group messages that @ the character — `@all` included — now notify by the sender's Message Importance using the private-message signal mapping, so an @ from a Priority friend rings instead of being silenced by the group rule. Platform echoes of the character's own messages are dropped before storage: they are never re-observed as incoming, never notify, and never count toward waits.
+
+The simulation system prompt moves to 0.0.2 with an exact-match migration: an untouched 0.0.1 default template is replaced on upgrade, a customised template is preserved as-is. New settings bound waits and the contact list (`waitMinSeconds`, `waitMaxSeconds`, `waitMinMessages`, `waitMaxMessages`, `waitMessageTimeoutSeconds`, `contactListMaxEntries`); `chatPreviewMessages` (10) and `historyMaxMessages` (50) defaults shrink, while existing databases keep their stored values. The WebUI localises the new `waiting` mode and Contact List state and exposes the new bounds. Agent traces no longer record every user message twice.
+
+Upgrading from RC.5 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database. Pending idle/alarm timers survive the upgrade; `wait` timers appear only once the character uses `wait_messages`.
 
 The release still supports one character, one operator, one OneBot account, and text sending. Incoming media is represented only as text placeholders.
 
 ---
 
-这是 MoonanBot v0.0.1 的第五个候选版本，修复了日常使用中发现的三个缺陷：WebUI 无 body 请求、推演运行醒着停滞、群列表与 QQ 漂移。
+这是 MoonanBot v0.0.1 的第六个候选版本，重做了推演 Agent 的动作面：手机成为显式的四态状态机，每条消息都附带当前可用的动作清单，角色学会了等待回复。
 
-WebUI 过去给所有请求都带上 `Content-Type: application/json`，包括没有 body 的请求。Fastify 5 会拒绝「声明 JSON 却空 body」的请求，于是启动、暂停、唤醒、刷新模型、恢复提示词、退出登录以及所有删除按钮一律 `400 FST_ERR_CTP_EMPTY_JSON_BODY`，而带 body 的保存按钮却一切正常。现在仅当请求确实带 body 时才附加该头，上述控件一次全部修复。
+Agent 过去暴露两个工具：`list_available_actions` 查询手机状态允许哪些动作，`perform_action` 执行。查询要花掉一次完整的模型往返，答案在下次调用前就可能过期，动作被拒绝时模型只知道失败原因、不知道还能做什么。现在查询工具已删除：每条世界事件消息和每次动作结果（包括错误）都以「接下来可用的动作」清单收尾，清单由验证执行的同一个状态机渲染（ADR-0007）。菜单不会过期、不会被跳过查询，叙述与校验永不脱节。
 
-推演 Agent 的设计要求每轮运行以 Terminating Action 收尾：即 `idle` 或 `sleep` 这两个会调度下次唤醒的动作。旧守卫只统计「是否调用过动作」，因此「发了消息然后直接结束」的运行会让角色停在 `awake` 且没有定时器——除非有人发消息，否则永久静默。现在守卫检查结束状态而非调用次数：循环结束后仍醒着的角色会收到继续纠正提示（区分「完全没动作」与「动作了但没安排下一步」两种文案），超过重试次数后仍由原有的强制待机 30 分钟兜底。
+手机现在按 关闭 → 主页 → 好友和群聊列表 → 聊天窗口 四态流转。`view_contacts` 打开联系人列表，显示未读数并折叠长列表（有未读消息的条目始终显示）；`open_chat` 只能在联系人列表中执行，且目标必须是已知联系人或群聊；进入聊天窗口会将其全部标记为已读，并保存阅读游标，`load_history` 借此继续向上翻页而不丢失位置。`idle` 与 `sleep` 会关闭手机；`set_contact_importance` 仅限在联系人列表或该好友自己的私聊窗口中执行。
 
-Roster Sync 过去只在连接建立时新增好友与群、从不清理，角色退掉的群会永远留在社交世界里，WebUI 群列表与 QQ 越漂越远。现在平台名单是成员资格的权威：成功且非空的 `get_group_list` 会删除本地多出的群（每次删除记录一条 `roster_sync` 事件）；平台返回空名单时跳过清理以防实现抽风误删；不在好友名单里的联系人保留记录但取消 `isFriend`。同步还在连接期间每六小时自动执行一次，并可通过 `POST /api/v1/platform/sync` 手动触发——群聊页新增「同步名单 / Sync roster」按钮。
+`wait_messages` 是第三个终止动作（ADR-0006 已相应修订）。在打开的聊天窗口中，角色可以等待该会话出现 1–5 条新消息（受超时限制，默认 180 秒），或单纯等待 5–60 秒；本轮以新的 `waiting` 模式结束，聊天窗口保持打开。任何会话中达到通知级别的消息都会提前结束等待，唤醒文案会把通知与被盯会话累积的新消息合并呈现；到时或计数达成同样唤醒，并附上到达内容的概要。操作员唤醒会取消等待，并以同样方式合并新消息。
 
-从 RC.4 升级会保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。
+@ 角色（含 `@all`）的群聊消息现在按发送者的 Message Importance 走私聊信号映射来通知：Priority 好友的 @ 会响铃，而不是被群聊规则静默。角色自己消息的平台回显在入库前被丢弃：不再被二次观测为来信、不触发通知、也不计入等待。
+
+推演系统提示词升级到 0.0.2，并带精确匹配迁移：升级时未改动过的 0.0.1 默认模板会被替换，自定义过的模板原样保留。新增设置约束等待与联系人列表（`waitMinSeconds`、`waitMaxSeconds`、`waitMinMessages`、`waitMaxMessages`、`waitMessageTimeoutSeconds`、`contactListMaxEntries`）；`chatPreviewMessages`（10）与 `historyMaxMessages`（50）默认值调小，已有数据库保留其存储值。WebUI 本地化了新的 `waiting` 模式与联系人列表状态，并暴露新的边界设置。Agent 轨迹不再把每条用户消息重复记录两次。
+
+从 RC.5 升级会保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。待触发的 idle/alarm 定时器不受影响；`wait` 定时器只会在角色使用 `wait_messages` 后出现。
 
 本版本仍只支持单角色、单操作者、单 OneBot 账号和纯文本发送，媒体仅转为文字占位。
