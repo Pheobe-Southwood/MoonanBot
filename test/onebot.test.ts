@@ -333,10 +333,11 @@ describe("OneBot outbound clients", () => {
 describe("OneBot settings normalization", () => {
   it("backfills outbound defaults for rows written by older releases", () => {
     const legacy = {
-      web: { host: "127.0.0.1", port: 21314 },
+      web: { host: "0.0.0.0", port: 8080, locale: "auto" },
       onebot: { accessToken: "legacy", apiTimeoutMs: 30_000, privateAllowlist: [], groupAllowlist: [] },
     };
     const normalized = normalizeSettings(legacy as any);
+    expect(normalized.web).toEqual({ host: "0.0.0.0", port: 8080 });
     expect(normalized.onebot).toMatchObject({ accessToken: "legacy", acceptReverse: true, outbound: [] });
   });
 

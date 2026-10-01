@@ -115,6 +115,7 @@ export function normalizeSettings(value: unknown): AppSettings {
   const base = defaultSettings();
   if (!value || typeof value !== "object") return base;
   const input = value as Partial<AppSettings>;
+  const web = (input.web ?? {}) as Partial<AppSettings["web"]>;
   const onebot = (input.onebot ?? {}) as Partial<AppSettings["onebot"]>;
   const media = (input.media ?? {}) as Partial<AppSettings["media"]>;
   const agents = (input.agents ?? {}) as Partial<AppSettings["agents"]>;
@@ -129,7 +130,10 @@ export function normalizeSettings(value: unknown): AppSettings {
   return {
     ...base,
     ...input,
-    web: { ...base.web, ...(input.web ?? {}) },
+    web: {
+      host: stringOr(web.host, base.web.host),
+      port: Math.trunc(inRange(web.port, 1, 65_535, base.web.port)),
+    },
     onebot: {
       accessToken: stringOr(onebot.accessToken, base.onebot.accessToken),
       apiTimeoutMs: inRange(onebot.apiTimeoutMs, 1_000, 600_000, base.onebot.apiTimeoutMs),
