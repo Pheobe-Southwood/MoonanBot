@@ -28,10 +28,3 @@ export async function main(): Promise<void> {
 if (process.argv[1] && import.meta.url === new URL(`file://${resolve(process.argv[1])}`).href) {
   void main();
 }
-
-export * from "./agents/index.js";
-export * from "./domain/index.js";
-export * from "./http/index.js";
-export * from "./platforms/index.js";
-export * from "./providers/index.js";
-export * from "./storage/index.js";

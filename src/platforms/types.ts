@@ -41,6 +41,5 @@ export interface ChatPlatformAdapter {
   syncRoster(): Promise<RosterSyncSummary>;
   /** Resolves a media file id to a fresh download payload when the platform exposes such an API. */
   fetchFile?(fileId: string, signal?: AbortSignal): Promise<PlatformFilePayload | null>;
-  fetchHistory?(target: ConversationTarget, count: number): Promise<never>;
   close(): Promise<void>;
 }

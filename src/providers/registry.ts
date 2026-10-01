@@ -50,42 +50,48 @@ const authContext: AuthContext = {
   },
 };
 
+/** OpenAI-compatible `GET {baseUrl}/models` id listing, shared by the DeepSeek overlay and custom endpoints. */
+async function listRemoteModelIds(baseUrl: string, key: string | undefined, signal: AbortSignal): Promise<string[]> {
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+    ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+    signal,
+  });
+  if (!response.ok) throw new Error(`model refresh failed: HTTP ${response.status}`);
+  const payload = await response.json() as { data?: Array<{ id?: string }> };
+  return (payload.data ?? []).flatMap((entry) => entry.id ? [entry.id] : []);
+}
+
+/** DeepSeek with a live model overlay: remote ids join the static catalog so freshly released models are selectable. */
 function liveDeepSeekProvider(base: Provider): Provider {
-  let remoteModels: readonly Model<any>[] | undefined;
-  return {
-    ...base,
-    getModels: () => remoteModels ?? base.getModels(),
-    refreshModels: async (context) => {
-      if (!context.allowNetwork) return;
+  const baseUrl = base.baseUrl ?? "https://api.deepseek.com";
+  return createProvider({
+    id: base.id,
+    name: base.name,
+    baseUrl,
+    auth: base.auth,
+    models: base.getModels(),
+    api: openAICompletionsApi(),
+    fetchModels: async (context) => {
+      if (!context.allowNetwork) return [];
       const credential = context.credential;
       const key = credential?.type === "api_key" ? credential.key : await authContext.env("DEEPSEEK_API_KEY");
-      if (!key) return;
-      const response = await fetch("https://api.deepseek.com/models", {
-        headers: { Authorization: `Bearer ${key}` },
-        signal: context.signal,
+      if (!key) return [];
+      const ids = await listRemoteModelIds(baseUrl, key, context.signal);
+      const known = new Map(base.getModels().map((model) => [model.id, model]));
+      return ids.map((id): Model<any> => known.get(id) ?? {
+        id,
+        name: id,
+        api: "openai-completions",
+        provider: base.id,
+        baseUrl,
+        reasoning: true,
+        input: ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 1_000_000,
+        maxTokens: 384_000,
       });
-      if (!response.ok) throw new Error(`DeepSeek model refresh failed: HTTP ${response.status}`);
-      const payload = await response.json() as { data?: Array<{ id?: string }> };
-      const existing = new Map(base.getModels().map((model) => [model.id, model]));
-      const next = (payload.data ?? []).flatMap((entry): Model<any>[] => {
-        if (!entry.id) return [];
-        const known = existing.get(entry.id);
-        return [known ?? {
-          id: entry.id,
-          name: entry.id,
-          api: "openai-completions",
-          provider: "deepseek",
-          baseUrl: "https://api.deepseek.com",
-          reasoning: true,
-          input: ["text"],
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 1_000_000,
-          maxTokens: 384_000,
-        }];
-      });
-      await context.publish({ update: () => { remoteModels = next.length ? next : base.getModels(); } });
     },
-  };
+  });
 }
 
 function customProvider(record: CustomProviderRecord): Provider {
@@ -110,20 +116,14 @@ function customProvider(record: CustomProviderRecord): Provider {
     fetchModels: async (context) => {
       const credential = context.credential;
       const key = credential?.type === "api_key" ? credential.key : undefined;
-      const response = await fetch(`${record.baseUrl.replace(/\/$/, "")}/models`, {
-        ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
-        signal: context.signal,
-      });
-      if (!response.ok) throw new Error(`${record.name} model refresh failed: HTTP ${response.status}`);
-      const payload = await response.json() as { data?: Array<{ id?: string }> };
-      return (payload.data ?? []).flatMap((entry): Model<"openai-completions">[] => {
-        if (!entry.id) return [];
-        const configured = models.find((model) => model.id === entry.id);
-        return [configured ?? {
-          id: entry.id!, name: entry.id!, api: "openai-completions", provider: record.id,
+      const ids = await listRemoteModelIds(record.baseUrl, key, context.signal);
+      return ids.map((id): Model<"openai-completions"> => {
+        const configured = models.find((model) => model.id === id);
+        return configured ?? {
+          id, name: id, api: "openai-completions", provider: record.id,
           baseUrl: record.baseUrl, reasoning: false, input: ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128_000, maxTokens: 8_192,
-        }];
+        };
       });
     },
     api: openAICompletionsApi(),

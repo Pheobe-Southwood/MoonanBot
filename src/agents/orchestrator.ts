@@ -123,10 +123,10 @@ export class RuntimeOrchestrator {
     this.db.upsertContact({
       platform: "onebot", id: event.senderId, name: event.senderName, aliases: existing?.aliases ?? [],
       summary: existing?.summary ?? "", importance: existing?.importance ?? "normal", isFriend: existing?.isFriend ?? event.target.kind === "private",
-    }, "observation", false);
+    });
     if (event.target.kind === "group") {
       const group = this.db.listGroups().find((item) => item.id === event.target.id);
-      this.db.upsertGroup({ platform: "onebot", id: event.target.id, name: event.target.name ?? group?.name ?? event.target.id, summary: group?.summary ?? "" }, "observation");
+      this.db.upsertGroup({ platform: "onebot", id: event.target.id, name: event.target.name ?? group?.name ?? event.target.id, summary: group?.summary ?? "" });
     }
     const stored: StoredMessage = {
       id: randomUUID(), platformMessageId: event.platformMessageId, target: event.target,
@@ -378,7 +378,6 @@ export class RuntimeOrchestrator {
     const end = Date.now();
     const start = this.db.lastSynthesisEnd();
     const events = this.db.eventsSince(start, end);
-    const batchId = this.db.createSynthesisBatch(start, end);
     const config = this.db.getSettings().value;
     const synthesisSeesImages = selectionSeesImages(this.providers, effectiveSelection(this.db, "synthesis"));
     const rendered = await renderSynthesisEvents(this.db, this.media, events, synthesisSeesImages);
@@ -393,7 +392,7 @@ export class RuntimeOrchestrator {
           initialState: { systemPrompt, model: selected.model, thinkingLevel: selected.thinkingLevel, tools },
           streamFn: this.providers.models.streamSimple.bind(this.providers.models),
           toolExecution: "sequential",
-          sessionId: `moonanbot-synthesis-${batchId}-${attempt}`,
+          sessionId: `moonanbot-synthesis-${end}-${attempt}`,
         });
         agent.subscribe((event) => {
           if (event.type === "message_end") this.traceMessage(runId, event.message, "synthesis");
@@ -405,18 +404,16 @@ export class RuntimeOrchestrator {
         staging.commit();
         const usage = this.usage(agent.state.messages);
         this.db.endAgentRun(runId, "completed", usage);
-        this.db.updateSynthesisBatch(batchId, "completed", attempt, staging.summary);
+        this.db.setLastSynthesisEnd(end);
         this.trimSimulationContext();
         this.db.setRuntime({ health: "healthy", lastError: null });
         return;
       } catch (error) {
         lastError = error instanceof Error ? error.message : String(error);
         this.db.endAgentRun(runId, "failed", { input: 0, output: 0 }, lastError);
-        this.db.updateSynthesisBatch(batchId, "retrying", attempt, undefined, lastError);
         if (attempt < config.synthesis.retryCount) await sleep(config.synthesis.retryBaseDelayMs * 2 ** (attempt - 1));
       }
     }
-    this.db.updateSynthesisBatch(batchId, "pending", config.synthesis.retryCount, undefined, lastError);
     this.db.setRuntime({ health: "degraded", lastError: `归纳失败：${lastError}` });
   }
 

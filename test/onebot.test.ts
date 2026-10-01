@@ -293,8 +293,8 @@ describe("OneBot outbound clients", () => {
     try {
       const adapter = new OneBotV11Adapter(fixture.db, () => fixture.db.getSettings().value, async () => undefined);
       const token = fixture.db.getSettings().value.onebot.accessToken;
-      fixture.db.upsertGroup({ platform: "onebot", id: "111", name: "Stay", summary: "keep me" }, "operator");
-      fixture.db.upsertGroup({ platform: "onebot", id: "222", name: "Left", summary: "old home" }, "operator");
+      fixture.db.upsertGroup({ platform: "onebot", id: "111", name: "Stay", summary: "keep me" });
+      fixture.db.upsertGroup({ platform: "onebot", id: "222", name: "Left", summary: "old home" });
       fixture.db.upsertContact({ platform: "onebot", id: "u1", name: "Friend One", aliases: [], summary: "", importance: "normal", isFriend: true });
       fixture.db.upsertContact({ platform: "onebot", id: "u2", name: "Stranger Now", aliases: [], summary: "old friend", importance: "priority", isFriend: true });
       const socket = new RosterSocket({ groups: [{ group_id: 111, group_name: "Stay" }], friends: [{ user_id: "u1", nickname: "Friend One" }] });
@@ -303,7 +303,7 @@ describe("OneBot outbound clients", () => {
       expect(fixture.db.listGroups().map((group) => group.id)).toEqual(["111"]);
       expect(fixture.db.getContact("u2")).toMatchObject({ isFriend: false, summary: "old friend", importance: "priority" });
       expect(fixture.db.eventsSince(0).some((event) => event.type === "roster_sync" && event.text.includes("Left"))).toBe(true);
-      fixture.db.upsertGroup({ platform: "onebot", id: "222", name: "Left", summary: "" }, "operator");
+      fixture.db.upsertGroup({ platform: "onebot", id: "222", name: "Left", summary: "" });
       fixture.db.upsertContact({ platform: "onebot", id: "u2", name: "Stranger Now", aliases: [], summary: "old friend", importance: "priority", isFriend: true });
       const summary = await adapter.syncRoster();
       expect(summary).toEqual({ groupsAdded: 0, groupsRemoved: 1, contactsUpdated: 1 });
@@ -317,7 +317,7 @@ describe("OneBot outbound clients", () => {
     try {
       const adapter = new OneBotV11Adapter(fixture.db, () => fixture.db.getSettings().value, async () => undefined);
       const token = fixture.db.getSettings().value.onebot.accessToken;
-      fixture.db.upsertGroup({ platform: "onebot", id: "333", name: "Only", summary: "" }, "operator");
+      fixture.db.upsertGroup({ platform: "onebot", id: "333", name: "Only", summary: "" });
       const socket = new RosterSocket({ groups: [], friends: [] });
       expect(adapter.attach(socket as any, { selfId: "bot", role: "universal", authorization: `Bearer ${token}` })).toMatchObject({ ok: true });
       await wait(30);
@@ -333,7 +333,7 @@ describe("OneBot outbound clients", () => {
 describe("OneBot settings normalization", () => {
   it("backfills outbound defaults for rows written by older releases", () => {
     const legacy = {
-      web: { host: "127.0.0.1", port: 21314, locale: "auto" as const },
+      web: { host: "127.0.0.1", port: 21314 },
       onebot: { accessToken: "legacy", apiTimeoutMs: 30_000, privateAllowlist: [], groupAllowlist: [] },
     };
     const normalized = normalizeSettings(legacy as any);

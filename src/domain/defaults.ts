@@ -1,14 +1,14 @@
 import { randomBytes } from "node:crypto";
 import type { AppSettings, CharacterProfile, RuntimeState } from "./types.js";
 
-export function randomSecret(bytes = 24): string {
+function randomSecret(bytes = 24): string {
   return randomBytes(bytes).toString("base64url");
 }
 
 export function defaultSettings(accessToken = randomSecret()): AppSettings {
   const emptyAgent = { providerId: null, modelId: null, thinkingLevel: "medium" as const, forceImageInput: false };
   return {
-    web: { host: "127.0.0.1", port: 21314, locale: "auto" },
+    web: { host: "127.0.0.1", port: 21314 },
     onebot: {
       accessToken,
       apiTimeoutMs: 30_000,

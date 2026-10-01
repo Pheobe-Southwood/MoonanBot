@@ -15,6 +15,7 @@ import { ProviderRegistry } from "../providers/registry.js";
 import { MoonanDatabase } from "../storage/database.js";
 import { WebAuth } from "./auth.js";
 import { OAuthFlowManager } from "./oauth-flows.js";
+import { VERSION } from "../version.js";
 
 export interface AppOptions {
   databasePath: string;
@@ -68,7 +69,7 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
     }
   });
 
-  server.get("/api/v1/health", async () => ({ status: "ok", version: "0.0.1-rc.8" }));
+  server.get("/api/v1/health", async () => ({ status: "ok", version: VERSION }));
   server.post("/api/v1/auth/login", async (request, reply) => {
     const address = request.ip;
     const state = failures.get(address);
@@ -279,16 +280,16 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
         for (const memory of body.memories) db.upsertMemory({
           id: String(memory.id || crypto.randomUUID()), occurredAt: Number(memory.occurredAt),
           summary: String(memory.summary), details: memory.details === null || memory.details === undefined ? null : String(memory.details),
-        }, "import");
+        });
         for (const contact of body.contacts) db.upsertContact({
           platform: "onebot", id: String(contact.id), name: String(contact.name),
           aliases: Array.isArray(contact.aliases) ? contact.aliases.map(String) : [], summary: String(contact.summary ?? ""),
           importance: (["priority_plus", "priority", "normal", "do_not_disturb", "no_push"].includes(contact.importance) ? contact.importance : "normal") as Importance,
           isFriend: Boolean(contact.isFriend),
-        }, "import");
+        });
         for (const group of body.groups) db.upsertGroup({
           platform: "onebot", id: String(group.id), name: String(group.name), summary: String(group.summary ?? ""),
-        }, "import");
+        });
         db.setPrompt("simulation", simulationPrompt);
         db.setPrompt("synthesis", synthesisPrompt);
         if (visionPrompt !== null && visionPrompt.trim()) db.setPrompt("vision", visionPrompt);

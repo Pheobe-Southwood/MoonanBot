@@ -208,7 +208,6 @@ describe("media rendering", () => {
     const rendered = await renderObservedMessages(fixture.db, pipeline, [message], { seesImages: true, describeLazily: true });
     expect(rendered.images).toHaveLength(1);
     expect(rendered.text).toContain("看这个[图片]");
-    expect(rendered.omitted).toBe(0);
     const types = rendered.content.map((block) => block.type);
     expect(types).toEqual(["text", "image"]);
   });
@@ -228,7 +227,6 @@ describe("media rendering", () => {
     cachedMedia(fixture.db, message.id, 1);
     const rendered = await renderObservedMessages(fixture.db, pipeline, [message], { seesImages: true, describeLazily: true });
     expect(rendered.images).toHaveLength(1);
-    expect(rendered.omitted).toBe(1);
     expect(rendered.text).toContain("（另有 1 张图片未附上）");
     expect(rendered.text).toContain("[图片：老图的描述]");
   });

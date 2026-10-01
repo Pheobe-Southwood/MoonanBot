@@ -58,7 +58,7 @@ function Shell({ section, setSection, locale, setLocale, children, logout }: { s
   const nav = ["overview", "character", "agents", "connections", "activity", "settings"] as Section[];
   return <div className="shell">
     <aside className="sidebar">
-      <div className="brand"><div className="brand-icon"><Moon size={19}/></div><div><strong>MoonanBot</strong><small>v0.0.1 RC</small></div></div>
+      <div className="brand"><div className="brand-icon"><Moon size={19}/></div><div><strong>MoonanBot</strong></div></div>
       <nav>{nav.map((item) => <button key={item} className={section === item ? "active" : ""} onClick={() => setSection(item)}>{navIcons[item]}<span>{t(item)}</span></button>)}</nav>
       <div className="sidebar-footer">
         <button onClick={() => setLocale(locale === "en" ? "zh-CN" : "en")}><Globe2/>{locale === "en" ? "简体中文" : "English"}</button>
