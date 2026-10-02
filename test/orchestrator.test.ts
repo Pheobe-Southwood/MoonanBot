@@ -320,7 +320,7 @@ describe("runtime orchestration with pi faux provider", () => {
     expect(db.listPendingTimers("wait")).toHaveLength(0);
     expect(db.getRuntime().mode).toBe("awake");
     const wake = db.eventsSince(0).find((event) => event.type === "operator_wake");
-    expect(wake?.text).toContain("你被唤醒了");
+    expect(wake?.text).toContain("被唤醒了");
     expect(wake?.text).toContain("等待期间来的消息");
   });
 
