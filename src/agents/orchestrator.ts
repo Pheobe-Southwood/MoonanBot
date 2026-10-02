@@ -107,7 +107,8 @@ export class RuntimeOrchestrator {
     this.db.setRuntime({ mode: "awake", nextWakeAt: null });
     const merged = wait
       ? await this.waitMergeText(wait, "你被唤醒了，请决定下一步行动。")
-      : { text: "你被唤醒了，请决定下一步行动。", images: [] as ImageContent[] };
+      : { text: "你被唤醒了，请决定下一步行动。", images: [] as ImageContent[], messageIds: [] as string[] };
+    this.db.markMessagesRead(merged.messageIds);
     this.db.addEvent("operator_wake", merged.text, {});
     await this.activate(merged.text, false, merged.images);
   }
@@ -162,6 +163,7 @@ export class RuntimeOrchestrator {
     this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", nextWakeAt: null });
     const merged = await this.waitText(watch, since, `等待的 ${needed} 条新消息已到达。`);
+    this.db.markMessagesRead(merged.messageIds);
     this.db.addEvent("wait_elapsed", merged.text, wait.payload);
     await this.activate(merged.text, false, merged.images);
   }
@@ -188,7 +190,7 @@ export class RuntimeOrchestrator {
     };
   }
 
-  private async waitText(watch: ConversationTarget, since: number, head: string): Promise<{ text: string; images: ImageContent[] }> {
+  private async waitText(watch: ConversationTarget, since: number, head: string): Promise<{ text: string; images: ImageContent[]; messageIds: string[] }> {
     const profile = this.db.getProfile();
     const messages = this.db.listMessagesSince(watch, since);
     const otherUnread = this.db.unreadSummary(false)
@@ -201,20 +203,20 @@ export class RuntimeOrchestrator {
       messages.length ? rendered.text : "没有新消息。",
       `${profile.name}的其他好友/群聊存在 ${otherUnread} 条未读消息。`,
     ].join("\n");
-    return { text, images: rendered.images };
+    return { text, images: rendered.images, messageIds: messages.map((message) => message.id) };
   }
 
-  private async waitMergeText(wait: TimerRecord, head: string): Promise<{ text: string; images: ImageContent[] }> {
+  private async waitMergeText(wait: TimerRecord, head: string): Promise<{ text: string; images: ImageContent[]; messageIds: string[] }> {
     const watch = wait.payload.watch as ConversationTarget | undefined;
     return watch
       ? this.waitText(watch, Number(wait.payload.since ?? wait.dueAt), head)
-      : Promise.resolve({ text: head, images: [] as ImageContent[] });
+      : Promise.resolve({ text: head, images: [] as ImageContent[], messageIds: [] as string[] });
   }
 
-  private async waitElapsedText(timer: TimerRecord): Promise<{ text: string; images: ImageContent[] }> {
+  private async waitElapsedText(timer: TimerRecord): Promise<{ text: string; images: ImageContent[]; messageIds: string[] }> {
     const watch = timer.payload.watch as ConversationTarget | undefined;
     const since = Number(timer.payload.since ?? timer.dueAt);
-    if (!watch) return { text: "等待结束，请决定下一步行动。", images: [] };
+    if (!watch) return { text: "等待结束，请决定下一步行动。", images: [], messageIds: [] };
     if (timer.payload.mode === "count") {
       const needed = Number(timer.payload.count ?? 1);
       const arrived = this.db.listMessagesSince(watch, since).length;
@@ -245,6 +247,7 @@ export class RuntimeOrchestrator {
           const merged = await this.waitMergeText(wait, text);
           text = merged.text;
           images = merged.images;
+          this.db.markMessagesRead(merged.messageIds);
         }
         this.db.addEvent(type, text, {});
         const mode = this.db.getRuntime().mode;
@@ -262,7 +265,11 @@ export class RuntimeOrchestrator {
         const merged = await this.waitElapsedText(timer);
         this.db.setRuntime({ ...(wasPaused ? {} : { mode: "awake" as const }), nextWakeAt: null });
         this.db.addEvent("wait_elapsed", merged.text, timer.payload, timer.dueAt);
-        if (!wasPaused) await this.activate(merged.text, false, merged.images);
+        if (!wasPaused) {
+          // Only a delivered summary advances the read watermark; a paused fire stays unread and resurfaces later.
+          this.db.markMessagesRead(merged.messageIds);
+          await this.activate(merged.text, false, merged.images);
+        }
         continue;
       }
       const isAlarm = timer.kind === "alarm";

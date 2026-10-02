@@ -120,6 +120,36 @@ describe("SQLite source of truth", () => {
     } finally { fixture.cleanup(); }
   });
 
+  it("anchors the unread watermark and marks exactly the delivered messages read", () => {
+    const fixture = testDatabase();
+    try {
+      const target = { platform: "onebot" as const, kind: "private" as const, id: "7", name: "Seven" };
+      const other = { platform: "onebot" as const, kind: "private" as const, id: "9", name: "Nine" };
+      const message = (id: string, at: number, direction: "incoming" | "outgoing" = "incoming", readAt: number | null = null) => ({
+        id, platformMessageId: `p-${id}`, target, senderId: "7", senderName: "Seven", direction,
+        content: id, segments: [], occurredAt: at, observedAt: at, deliveryStatus: "received" as const, readAt,
+      });
+      expect(fixture.db.oldestUnreadOccurredAt(target)).toBeNull();
+      fixture.db.insertMessage(message("old-read", 100, "incoming", 101));
+      fixture.db.insertMessage(message("out", 200, "outgoing"));
+      expect(fixture.db.oldestUnreadOccurredAt(target)).toBeNull();
+      fixture.db.insertMessage(message("gap-1", 300));
+      fixture.db.insertMessage(message("gap-2", 400));
+      expect(fixture.db.oldestUnreadOccurredAt(target)).toBe(300);
+      expect(fixture.db.oldestUnreadOccurredAt(other)).toBeNull();
+
+      fixture.db.markMessagesRead([]);
+      expect(fixture.db.oldestUnreadOccurredAt(target)).toBe(300);
+      fixture.db.markMessagesRead(["gap-1"]);
+      expect(fixture.db.getMessage("gap-1")?.readAt).toBeTypeOf("number");
+      expect(fixture.db.oldestUnreadOccurredAt(target)).toBe(400);
+      const firstReadAt = fixture.db.getMessage("gap-1")?.readAt;
+      fixture.db.markMessagesRead(["gap-1", "gap-2"]);
+      expect(fixture.db.getMessage("gap-1")?.readAt).toBe(firstReadAt);
+      expect(fixture.db.oldestUnreadOccurredAt(target)).toBeNull();
+    } finally { fixture.cleanup(); }
+  });
+
   it("migrates untouched legacy simulation prompts and preserves edited ones", () => {
     const fixture = testDatabase();
     fixture.db.setPrompt("simulation", LEGACY_SIMULATION_PROMPT_V0_0_1);

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed `wait_messages` missing messages that arrive during model-provider latency (#5): the wait window anchored to `Date.now()` at tool execution, so incoming messages between the last chat read/send and the wait action were excluded from `messageCount`, absent from the wait summary, and could even produce a "phone vibrated … no new messages" wake. The window now anchors to the Character's last up-to-date view of the watched chat — the oldest unread incoming message, else now — and a count-mode wait whose target is already satisfied expires immediately instead of idling until the timeout.
+- Delivered wait summaries now mark exactly the messages they rendered as read, so consecutive waits never re-count or re-show them and the contact list no longer reports a chat the Character just read through a wait summary as unread. A wait timer that expires while paused still leaves its messages unread, so they resurface after the operator resumes.
+
 ## 0.0.1-rc.8 — 2026-09-29
 
 - Fixed `forceImageInput` never reaching the provider wire: the flag only relaxed MoonanBot's own capability gate, while pi-ai's message transform still replaced images with `(image omitted: model does not support images)` whenever the model record's `input` lacked `"image"` — which is always the case for custom-provider models (hardcoded `input:["text"]`). Slot selection now patches the pi-ai Model record before serialization, so forced slots send real `image_url` data URIs.

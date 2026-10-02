@@ -211,6 +211,43 @@ describe("simulation tools", () => {
     } finally { fixture.cleanup(); }
   });
 
+  it("anchors the wait window to unread messages that arrived during model latency", async () => {
+    const fixture = testDatabase();
+    try {
+      fixture.db.upsertContact(seven);
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
+      await execute(perform!, { action: "open_phone" });
+      await execute(perform!, { action: "view_contacts" });
+      await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" });
+
+      // A reply lands between open_chat and wait_messages, i.e. during the provider round-trip.
+      const gapAt = Date.now() - 5_000;
+      fixture.db.insertMessage({
+        id: "gap-1", platformMessageId: "gap-1", target: sevenTarget, senderId: "7", senderName: "Seven",
+        direction: "incoming", content: "延迟期间的回复", segments: [], occurredAt: gapAt, observedAt: gapAt,
+        deliveryStatus: "received", readAt: null,
+      });
+
+      // seconds mode: the window covers the gap message but the duration is not shortened
+      await execute(perform!, { action: "wait_messages", durationSeconds: 10 });
+      const secondsTimer = fixture.db.listPendingTimers("wait")[0]!;
+      expect(Number(secondsTimer.payload.since)).toBeLessThanOrEqual(gapAt);
+      expect(secondsTimer.dueAt - Date.now()).toBeGreaterThan(9_000);
+
+      // count mode already satisfied by the gap message: the timer expires immediately
+      await execute(perform!, { action: "wait_messages", messageCount: 1 });
+      const satisfied = fixture.db.listPendingTimers("wait")[0]!;
+      expect(Number(satisfied.payload.since)).toBeLessThanOrEqual(gapAt);
+      expect(satisfied.dueAt - Date.now()).toBeLessThanOrEqual(0);
+
+      // a count beyond the gap message still waits the full timeout from now
+      await execute(perform!, { action: "wait_messages", messageCount: 2 });
+      const waiting = fixture.db.listPendingTimers("wait")[0]!;
+      expect(Number(waiting.payload.since)).toBeLessThanOrEqual(gapAt);
+      expect(waiting.dueAt - Date.now()).toBeGreaterThan(170_000);
+    } finally { fixture.cleanup(); }
+  });
+
   it("locks set_contact_importance to the contact list or the friend's own chat", async () => {
     const fixture = testDatabase();
     try {
