@@ -12,7 +12,7 @@ import type { AgentKind, AppSettings, CharacterProfile, ContactRecord, GroupReco
 import { assertValidSettings } from "../domain/settings.js";
 import { OneBotV11Adapter } from "../platforms/onebot.js";
 import { ProviderRegistry } from "../providers/registry.js";
-import { MoonanDatabase } from "../storage/database.js";
+import { MoonanDatabase, type CustomProviderRecord } from "../storage/database.js";
 import { WebAuth } from "./auth.js";
 import { OAuthFlowManager } from "./oauth-flows.js";
 import { VERSION } from "../version.js";
@@ -41,6 +41,30 @@ function isUnsafe(method: string): boolean {
 function maskSecret(value: string | null): string | null {
   if (!value) return null;
   return value.length < 8 ? "••••••••" : `${value.slice(0, 3)}••••${value.slice(-3)}`;
+}
+
+/**
+ * Model lists only ever come from a non-empty, valid API payload; anything else
+ * (missing, non-array, empty, or fully invalid) yields null so the caller keeps
+ * the stored last-known-good list instead of wiping it. Duplicate ids collapse
+ * to their first entry.
+ */
+function coerceCustomModels(value: unknown): CustomProviderRecord["models"] | null {
+  if (!Array.isArray(value) || !value.length) return null;
+  const seen = new Set<string>();
+  const models = (value as any[]).flatMap((entry) => {
+    const id = typeof entry?.id === "string" ? entry.id.trim() : "";
+    if (!id || seen.has(id)) return [];
+    seen.add(id);
+    return [{
+      id,
+      name: typeof entry?.name === "string" && entry.name.trim() ? entry.name.trim() : id,
+      contextWindow: Number.isFinite(entry?.contextWindow) && entry.contextWindow > 0 ? Number(entry.contextWindow) : 128_000,
+      maxTokens: Number.isFinite(entry?.maxTokens) && entry.maxTokens > 0 ? Number(entry.maxTokens) : 8_192,
+      reasoning: Boolean(entry?.reasoning),
+    }];
+  });
+  return models.length ? models : null;
 }
 
 export async function createApp(options: AppOptions): Promise<MoonanApp> {
@@ -244,9 +268,20 @@ export async function createApp(options: AppOptions): Promise<MoonanApp> {
   server.get("/api/v1/custom-providers", async () => db.listCustomProviders().map((item) => ({ ...item, apiKey: maskSecret(item.apiKey) })));
   server.put("/api/v1/custom-providers/:id", async (request) => {
     const body = request.body as any;
+    const id = String((request.params as any).id);
     const baseUrl = String(body.baseUrl ?? "");
     try { new URL(baseUrl); } catch { throw new Error("invalid_base_url"); }
-    const saved = providers.saveCustom({ id: (request.params as any).id, name: String(body.name), baseUrl, apiKey: body.apiKey ? String(body.apiKey) : null, models: Array.isArray(body.models) ? body.models : [] });
+    const existing = db.listCustomProviders().find((item) => item.id === id);
+    // Operator edit: absent fields keep the stored values — a blank key keeps the key, a missing name keeps the display name.
+    const name = body.name ? String(body.name).trim() : existing?.name ?? "";
+    if (!name) throw new Error("name_required");
+    const saved = providers.saveCustom({
+      id,
+      name,
+      baseUrl,
+      apiKey: body.apiKey ? String(body.apiKey) : existing?.apiKey ?? null,
+      models: coerceCustomModels(body.models) ?? existing?.models ?? [],
+    });
     return { ...saved, apiKey: maskSecret(saved.apiKey) };
   });
   server.delete("/api/v1/custom-providers/:id", async (request) => { providers.deleteCustom((request.params as any).id); return { ok: true }; });

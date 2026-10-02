@@ -123,3 +123,13 @@ _Avoid_: Relay, tunnel
 **Roster Sync**:
 The reconciliation of MoonanBot's known groups and contacts with the platform's current friend and group lists. The platform list is authoritative for membership.
 _Avoid_: Friend sync, group refresh
+
+## Model providers
+
+**Custom Provider**:
+An operator-registered OpenAI-compatible endpoint with its own Base URL and optional API key, selectable by every Agent slot like a built-in provider.
+_Avoid_: proxy, self-hosted provider, third-party relay
+
+**Known Model List**:
+The persisted, last-known-good set of models one Custom Provider offers; a failed or empty remote refresh never clears it.
+_Avoid_: model cache, remote catalog
