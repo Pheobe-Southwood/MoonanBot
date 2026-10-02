@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { archiveThreshold, estimateContextTokens, formatAvailableActions, listAvailableActions, notificationFor, segmentsMention, supportsImageInput, validateDuration, validateWait } from "../src/domain/behavior.js";
+import { ACTION_MENU_HEADER, archiveThreshold, estimateContextTokens, formatAvailableActions, listAvailableActions, notificationFor, pruneStaleActionMenus, segmentsMention, supportsImageInput, validateDuration, validateWait } from "../src/domain/behavior.js";
 import { defaultRuntime, defaultSettings } from "../src/domain/defaults.js";
 import { assertValidSettings, normalizeSettings } from "../src/domain/settings.js";
 import type { PhoneState, RuntimeState } from "../src/domain/types.js";
@@ -141,5 +141,101 @@ describe("behavior domain", () => {
     expect(settings.agents.vision.forceImageInput).toBe(false);
     expect(settings.media.byteTtlDays).toBe(7);
     expect(() => assertValidSettings(settings)).not.toThrow();
+  });
+});
+
+describe("action menu pruning", () => {
+  const menu = (state: string): string => `${ACTION_MENU_HEADER}\n- idle(durationMinutes: number)：自娱自乐一会（${state}）`;
+  const user = (text: string) => ({ role: "user" as const, content: text, timestamp: 1 });
+  const toolResult = (text: string, isError = false) => ({
+    role: "toolResult" as const, toolName: "perform_action", toolCallId: "call-perform", isError,
+    content: [{ type: "text" as const, text }],
+  });
+  const assistant = (text: string) => ({ role: "assistant" as const, content: [{ type: "text" as const, text }] });
+
+  /** Menu copies the model can still see: assistant quotes are narration, not appendices. */
+  function menuOccurrences(messages: unknown[]): number {
+    const visible = (messages as Array<{ role?: unknown } | null | undefined>).filter((message) => message?.role !== "assistant");
+    return JSON.stringify(visible).split(ACTION_MENU_HEADER).length - 1;
+  }
+
+  it("keeps only the newest menu across user and tool-result messages", () => {
+    const messages = [
+      user(`你醒来了\n\n${menu("旧")}`),
+      assistant(`分析：${menu("引用")}`),
+      toolResult(`打开了手机。\n\n${menu("中")}`),
+      assistant("再看看好友列表。"),
+      toolResult(`当前手机状态：好友和群聊列表\n\n${menu("新")}`),
+    ];
+    const pruned = pruneStaleActionMenus(messages);
+    expect(pruned[0]).toEqual(user("你醒来了"));
+    expect(pruned[1]).toBe(messages[1]);
+    expect(pruned[2]).toEqual(toolResult("打开了手机。"));
+    expect(pruned[3]).toBe(messages[3]);
+    expect(pruned[4]).toBe(messages[4]);
+    expect(menuOccurrences(pruned)).toBe(1);
+  });
+
+  it("strips real appended menus down to the newest copy", () => {
+    const closedMenu = formatAvailableActions(listAvailableActions(defaultRuntime()));
+    const chatMenu = formatAvailableActions(listAvailableActions(withPhone(defaultRuntime(), { kind: "chat", target: chatTarget })));
+    const messages = [
+      user(`你醒来了\n\n${closedMenu}`),
+      toolResult(`打开了聊天窗口。\n\n${chatMenu}`),
+    ];
+    const pruned = pruneStaleActionMenus(messages);
+    expect((pruned[0] as ReturnType<typeof user>).content).toBe("你醒来了");
+    expect(pruned[1]).toBe(messages[1]);
+    expect(menuOccurrences(pruned)).toBe(1);
+  });
+
+  it("strips menus from block content and error results while keeping images", () => {
+    const image = { type: "image", data: "base64data", mimeType: "image/png" };
+    const withImage = {
+      role: "toolResult" as const, toolName: "perform_action", toolCallId: "call-chat", isError: false,
+      content: [
+        { type: "text" as const, text: "打开了聊天窗口。\n" },
+        image,
+        { type: "text" as const, text: `\n还有 2 条未读。\n\n${menu("图后")}` },
+      ],
+    };
+    const failed = toolResult(`当前状态不能执行 sleep\n\n${menu("错误后")}`, true);
+    const newest = user(`手机响了\n\n${menu("最新")}`);
+    const pruned = pruneStaleActionMenus([withImage, failed, newest]);
+    const stripped = pruned[0] as typeof withImage;
+    expect(stripped.content[2]).toEqual({ type: "text", text: "\n还有 2 条未读。" });
+    expect(stripped.content[1]).toBe(image);
+    expect((pruned[1] as ReturnType<typeof toolResult>).content[0]).toEqual({ type: "text", text: "当前状态不能执行 sleep" });
+    expect((pruned[1] as ReturnType<typeof toolResult>).isError).toBe(true);
+    expect(pruned[2]).toBe(newest);
+    expect(menuOccurrences(pruned)).toBe(1);
+  });
+
+  it("leaves mid-text mentions and assistant quotes untouched", () => {
+    const mention = user(`系统说明：${ACTION_MENU_HEADER} 清单会随每条消息更新。\n正文继续。`);
+    const quoted = assistant(`导演分析：刚才的清单是\n\n${menu("引用")}`);
+    const pruned = pruneStaleActionMenus([mention, quoted]);
+    expect(pruned[0]).toBe(mention);
+    expect(pruned[1]).toBe(quoted);
+  });
+
+  it("is idempotent, passthrough without menus, and tolerant of malformed entries", () => {
+    const plain = [user("纯文本"), toolResult("结果"), assistant("回应")];
+    expect(pruneStaleActionMenus(plain)).toBe(plain);
+    const withMenus = [user(`a\n\n${menu("1")}`), user(`b\n\n${menu("2")}`)];
+    const once = pruneStaleActionMenus(withMenus);
+    expect(menuOccurrences(once)).toBe(1);
+    expect(pruneStaleActionMenus(once)).toBe(once);
+    const malformed: unknown[] = [null, undefined, { role: "user" }, { role: "toolResult", content: 42 }, { role: "custom" }, user(`c\n\n${menu("3")}`)];
+    expect(() => pruneStaleActionMenus(malformed)).not.toThrow();
+    expect(menuOccurrences(pruneStaleActionMenus(malformed))).toBe(1);
+  });
+
+  it("keeps messages when stripping empties their content", () => {
+    const pruned = pruneStaleActionMenus([user(menu("孤")), toolResult(menu("孤")), user(`新事件\n\n${menu("新")}`)]);
+    expect(pruned).toHaveLength(3);
+    expect((pruned[0] as ReturnType<typeof user>).content).toBe("");
+    expect((pruned[1] as ReturnType<typeof toolResult>).content).toEqual([{ type: "text", text: "" }]);
+    expect(menuOccurrences(pruned)).toBe(1);
   });
 });

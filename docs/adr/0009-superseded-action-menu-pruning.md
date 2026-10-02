@@ -1,0 +1,10 @@
+# Prune superseded action menus from the simulation context
+
+Amends ADR-0007. The menu still rides on every world-event message and every `perform_action` result exactly as that decision prescribed, but each appendix used to remain in the Simulation Agent's transcript until the next Synthesis compacted the context, so a long-lived instance re-sent every stale menu it had ever produced — roughly 150–250 tokens per action — on every request (issue #6). Now only the newest Action Menu survives: before each LLM call a context transform strips the menu appendix from all earlier user and tool-result messages (the newest copy is kept, assistant output is never touched, and the `agent_messages` trace still records every message verbatim), and the same pruning is applied to the live transcript and the persisted agent state when a run ends. The accepted cost is provider prompt caching: rewriting a message mid-transcript invalidates the cache from that point, so about one previous assistant turn plus tool result is re-billed uncached once per turn, in exchange for bounded context growth and an archive-threshold estimate that reflects what the model actually sees.
+
+## Considered Options
+
+- **Keep appending menus and never remove them (ADR-0007 status quo)**: cache-friendly and simplest, but the context grows by a menu per action until Synthesis trims it, inflating every request and the archive threshold.
+- **Prune only at run boundaries**: keeps the intra-run prompt cache intact, but menus still accumulate within a run, which does not satisfy the issue's "after every model response" requirement.
+- **Move the menu into a per-turn system prompt**: removes appendices entirely, but a system prompt that changes with every phone-state transition invalidates the whole cached prefix and abandons the message-attached narration ADR-0007 established.
+- **Prune superseded menus before every LLM call and persist the pruned transcript (chosen)**: exactly the issue's fix; one live menu anywhere in the simulation context, with cache invalidation confined to the short tail behind the most recent appendix.
