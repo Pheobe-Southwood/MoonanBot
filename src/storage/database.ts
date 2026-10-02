@@ -24,8 +24,6 @@ import type {
 } from "../domain/types.js";
 import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT, SYNTHESIS_SYSTEM_PROMPT, VISION_SYSTEM_PROMPT } from "../agents/prompts.js";
 
-type SqlValue = string | number | bigint | Uint8Array | null;
-
 export type TimerKind = "idle" | "alarm" | "wait";
 
 export interface TimerRecord {
@@ -97,10 +95,6 @@ export class MoonanDatabase {
 
   private migrate(): void {
     this.sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at INTEGER NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS settings (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         value_json TEXT NOT NULL,
@@ -234,16 +228,10 @@ export class MoonanDatabase {
         messages_json TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS synthesis_batches (
-        id TEXT PRIMARY KEY,
-        window_start INTEGER NOT NULL,
-        window_end INTEGER NOT NULL,
-        status TEXT NOT NULL,
-        attempts INTEGER NOT NULL DEFAULT 0,
-        summary TEXT,
-        error TEXT,
-        created_at INTEGER NOT NULL,
-        completed_at INTEGER
+      CREATE TABLE IF NOT EXISTS synthesis_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        last_end INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
       );
       CREATE TABLE IF NOT EXISTS provider_credentials (
         provider_id TEXT PRIMARY KEY,
@@ -277,28 +265,21 @@ export class MoonanDatabase {
         created_at INTEGER NOT NULL,
         expires_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS oauth_sessions (
-        id TEXT PRIMARY KEY,
-        provider_id TEXT NOT NULL,
-        state TEXT NOT NULL,
-        events_json TEXT NOT NULL,
-        prompt_json TEXT,
-        answer TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS document_revisions (
-        id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL,
-        entity_id TEXT NOT NULL,
-        snapshot_json TEXT NOT NULL,
-        source TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      );
     `);
-    const applied = this.sqlite.prepare("SELECT 1 FROM schema_migrations WHERE version = 1").get();
-    if (!applied) this.sqlite.prepare("INSERT INTO schema_migrations(version, applied_at) VALUES(1, ?)").run(now());
+    this.carryLegacyState();
     this.seed();
+  }
+
+  /** One-time upgrades for databases written by older releases: keep the synthesis watermark, drop tables no code reads. */
+  private carryLegacyState(): void {
+    if (!this.sqlite.prepare("SELECT 1 FROM synthesis_state WHERE id=1").get()) {
+      const legacy = this.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='synthesis_batches'").get();
+      const lastEnd = legacy
+        ? Number((this.sqlite.prepare("SELECT COALESCE(MAX(window_end),0) AS value FROM synthesis_batches WHERE status='completed'").get() as any).value)
+        : 0;
+      this.sqlite.prepare("INSERT INTO synthesis_state(id,last_end,updated_at) VALUES(1,?,?)").run(lastEnd, now());
+    }
+    this.sqlite.exec("DROP TABLE IF EXISTS synthesis_batches; DROP TABLE IF EXISTS document_revisions; DROP TABLE IF EXISTS oauth_sessions; DROP TABLE IF EXISTS schema_migrations;");
   }
 
   private seed(): void {
@@ -358,7 +339,6 @@ export class MoonanDatabase {
     const result = this.sqlite.prepare(`UPDATE character_profile SET name=?,timezone=?,locale=?,soul=?,environment=?,version=version+1,updated_at=? WHERE id=1 AND version=?`)
       .run(input.name.trim(), input.timezone, input.locale, input.soul, input.environment, timestamp, expectedVersion);
     if (Number(result.changes) !== 1) throw new Error("profile_version_conflict");
-    this.addRevision("profile", "singleton", this.getProfile(), "operator");
     return this.getProfile();
   }
 
@@ -381,19 +361,15 @@ export class MoonanDatabase {
     }));
   }
 
-  upsertMemory(input: Pick<MemoryRecord, "id" | "occurredAt" | "summary" | "details">, source = "operator"): MemoryRecord {
+  upsertMemory(input: Pick<MemoryRecord, "id" | "occurredAt" | "summary" | "details">): MemoryRecord {
     const timestamp = now();
     this.sqlite.prepare(`INSERT INTO memories(id,occurred_at,summary,details,created_at,updated_at,forgotten_at)
       VALUES(?,?,?,?,?,?,NULL) ON CONFLICT(id) DO UPDATE SET occurred_at=excluded.occurred_at,summary=excluded.summary,details=excluded.details,updated_at=excluded.updated_at,forgotten_at=NULL`)
       .run(input.id, input.occurredAt, input.summary, input.details, timestamp, timestamp);
-    const result = this.listMemories().find((item) => item.id === input.id)!;
-    this.addRevision("memory", input.id, result, source);
-    return result;
+    return this.listMemories().find((item) => item.id === input.id)!;
   }
 
-  forgetMemory(id: string, source = "operator"): boolean {
-    const snapshot = this.listMemories().find((item) => item.id === id);
-    if (snapshot) this.addRevision("memory", id, snapshot, source);
+  forgetMemory(id: string): boolean {
     return Number(this.sqlite.prepare("UPDATE memories SET forgotten_at=?,updated_at=? WHERE id=? AND forgotten_at IS NULL").run(now(), now(), id).changes) === 1;
   }
 
@@ -408,16 +384,14 @@ export class MoonanDatabase {
     return this.listContacts().find((item) => item.id === id);
   }
 
-  upsertContact(input: Omit<ContactRecord, "createdAt" | "updatedAt">, source = "operator", preserveImportance = false): ContactRecord {
+  upsertContact(input: Omit<ContactRecord, "createdAt" | "updatedAt">, preserveImportance = false): ContactRecord {
     const timestamp = now();
     const existing = this.getContact(input.id);
     const importance = preserveImportance && existing ? existing.importance : input.importance;
     this.sqlite.prepare(`INSERT INTO contacts(platform,id,name,aliases_json,summary,importance,is_friend,created_at,updated_at)
       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(platform,id) DO UPDATE SET name=excluded.name,aliases_json=excluded.aliases_json,summary=excluded.summary,importance=excluded.importance,is_friend=excluded.is_friend,updated_at=excluded.updated_at`)
       .run("onebot", input.id, input.name, JSON.stringify(input.aliases), input.summary, importance, input.isFriend ? 1 : 0, existing?.createdAt ?? timestamp, timestamp);
-    const result = this.getContact(input.id)!;
-    this.addRevision("contact", input.id, result, source);
-    return result;
+    return this.getContact(input.id)!;
   }
 
   setContactImportance(id: string, importance: Importance): ContactRecord {
@@ -437,15 +411,13 @@ export class MoonanDatabase {
     }));
   }
 
-  upsertGroup(input: Omit<GroupRecord, "createdAt" | "updatedAt">, source = "operator"): GroupRecord {
+  upsertGroup(input: Omit<GroupRecord, "createdAt" | "updatedAt">): GroupRecord {
     const timestamp = now();
     const existing = this.listGroups().find((item) => item.id === input.id);
     this.sqlite.prepare(`INSERT INTO chat_groups(platform,id,name,summary,created_at,updated_at) VALUES(?,?,?,?,?,?)
       ON CONFLICT(platform,id) DO UPDATE SET name=excluded.name,summary=excluded.summary,updated_at=excluded.updated_at`)
       .run("onebot", input.id, input.name, input.summary, existing?.createdAt ?? timestamp, timestamp);
-    const result = this.listGroups().find((item) => item.id === input.id)!;
-    this.addRevision("group", input.id, result, source);
-    return result;
+    return this.listGroups().find((item) => item.id === input.id)!;
   }
 
   deleteGroup(id: string): boolean {
@@ -717,21 +689,15 @@ export class MoonanDatabase {
     this.sqlite.prepare("DELETE FROM custom_providers WHERE id=?").run(id);
   }
 
-  createSynthesisBatch(windowStart: number, windowEnd: number): string {
-    const id = randomUUID();
-    this.sqlite.prepare("INSERT INTO synthesis_batches(id,window_start,window_end,status,created_at) VALUES(?,?,?,?,?)")
-      .run(id, windowStart, windowEnd, "pending", now());
-    return id;
-  }
-
-  updateSynthesisBatch(id: string, status: string, attempts: number, summary?: string, error?: string): void {
-    this.sqlite.prepare("UPDATE synthesis_batches SET status=?,attempts=?,summary=?,error=?,completed_at=? WHERE id=?")
-      .run(status, attempts, summary ?? null, error ?? null, status === "completed" ? now() : null, id);
-  }
-
   lastSynthesisEnd(): number {
-    const row = this.sqlite.prepare("SELECT MAX(window_end) AS value FROM synthesis_batches WHERE status='completed'").get() as any;
-    return row?.value ? Number(row.value) : 0;
+    const row = this.sqlite.prepare("SELECT last_end FROM synthesis_state WHERE id=1").get() as any;
+    return row ? Number(row.last_end) : 0;
+  }
+
+  setLastSynthesisEnd(end: number): void {
+    this.sqlite.prepare(`INSERT INTO synthesis_state(id,last_end,updated_at) VALUES(1,?,?)
+      ON CONFLICT(id) DO UPDATE SET last_end=excluded.last_end,updated_at=excluded.updated_at`)
+      .run(end, now());
   }
 
   getAdminAuth(): { hash: string; salt: string } | undefined {
@@ -777,13 +743,4 @@ export class MoonanDatabase {
       prompts: { simulation: this.getPrompt("simulation").template, synthesis: this.getPrompt("synthesis").template, vision: this.getPrompt("vision").template },
     };
   }
-
-  private addRevision(kind: string, entityId: string, snapshot: unknown, source: string): void {
-    this.sqlite.prepare("INSERT INTO document_revisions(id,kind,entity_id,snapshot_json,source,created_at) VALUES(?,?,?,?,?,?)")
-      .run(randomUUID(), kind, entityId, JSON.stringify(snapshot), source, now());
-  }
-}
-
-export function bindParams(values: SqlValue[]): SqlValue[] {
-  return values;
 }

@@ -147,12 +147,12 @@ export function buildSynthesisTools(db: MoonanDatabase): { tools: AgentTool[]; s
       if (tokens > settings.synthesis.memorySoftTokens) throw new Error(`活动记忆仍超过软上限：${tokens}/${settings.synthesis.memorySoftTokens} Token`);
       summary = params.summary;
       db.transaction(() => {
-        for (const id of forgotten) db.forgetMemory(id, "synthesis");
-        for (const memory of memories.values()) db.upsertMemory(memory, "synthesis");
+        for (const id of forgotten) db.forgetMemory(id);
+        for (const memory of memories.values()) db.upsertMemory(memory);
         for (const id of removedContacts) db.deleteContact(id);
-        for (const contact of contacts.values()) db.upsertContact(contact, "synthesis", true);
+        for (const contact of contacts.values()) db.upsertContact(contact, true);
         for (const id of removedGroups) db.deleteGroup(id);
-        for (const group of groups.values()) db.upsertGroup(group, "synthesis");
+        for (const group of groups.values()) db.upsertGroup(group);
         if (settings.synthesis.memorySoftTokens !== settingsEnvelope.value.synthesis.memorySoftTokens) {
           db.updateSettings(settings, settingsEnvelope.version);
         }

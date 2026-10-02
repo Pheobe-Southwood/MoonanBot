@@ -1,10 +1,16 @@
 import { defaultSettings } from "./defaults.js";
 import type { AgentSelection, AppSettings, OneBotOutboundClient, OneBotRole } from "./types.js";
 
-export const OUTBOUND_ROLES: readonly OneBotRole[] = ["event", "api", "universal"];
-export const OUTBOUND_RECONNECT_MIN_MS = 1_000;
-export const OUTBOUND_RECONNECT_MAX_MS = 600_000;
+const OUTBOUND_ROLES: readonly OneBotRole[] = ["event", "api", "universal"];
+const OUTBOUND_RECONNECT_MIN_MS = 1_000;
+const OUTBOUND_RECONNECT_MAX_MS = 600_000;
 const OUTBOUND_ROLE_FALLBACK: OneBotRole = "universal";
+
+/** Canonical OneBot role parsing shared by stored settings and live connection headers. */
+export function parseOneBotRole(value: unknown, fallback: OneBotRole | null = null): OneBotRole | null {
+  const role = String(value ?? "").trim().toLowerCase();
+  return (OUTBOUND_ROLES as readonly string[]).includes(role) ? role as OneBotRole : fallback;
+}
 
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === "string" ? value : fallback;
@@ -19,8 +25,7 @@ function inRange(value: unknown, minimum: number, maximum: number, fallback: num
 }
 
 function roleOr(value: unknown, fallback: OneBotRole): OneBotRole {
-  const role = String(value ?? "").trim().toLowerCase();
-  return (OUTBOUND_ROLES as readonly string[]).includes(role) ? role as OneBotRole : fallback;
+  return parseOneBotRole(value, fallback) ?? fallback;
 }
 
 const THINKING_LEVELS: readonly AgentSelection["thinkingLevel"][] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -110,6 +115,7 @@ export function normalizeSettings(value: unknown): AppSettings {
   const base = defaultSettings();
   if (!value || typeof value !== "object") return base;
   const input = value as Partial<AppSettings>;
+  const web = (input.web ?? {}) as Partial<AppSettings["web"]>;
   const onebot = (input.onebot ?? {}) as Partial<AppSettings["onebot"]>;
   const media = (input.media ?? {}) as Partial<AppSettings["media"]>;
   const agents = (input.agents ?? {}) as Partial<AppSettings["agents"]>;
@@ -124,7 +130,10 @@ export function normalizeSettings(value: unknown): AppSettings {
   return {
     ...base,
     ...input,
-    web: { ...base.web, ...(input.web ?? {}) },
+    web: {
+      host: stringOr(web.host, base.web.host),
+      port: Math.trunc(inRange(web.port, 1, 65_535, base.web.port)),
+    },
     onebot: {
       accessToken: stringOr(onebot.accessToken, base.onebot.accessToken),
       apiTimeoutMs: inRange(onebot.apiTimeoutMs, 1_000, 600_000, base.onebot.apiTimeoutMs),

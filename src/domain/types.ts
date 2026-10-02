@@ -146,7 +146,7 @@ export interface OneBotOutboundClient {
 export type OneBotRole = "event" | "api" | "universal";
 
 export interface AppSettings {
-  web: { host: string; port: number; locale: "auto" | "zh-CN" | "en" };
+  web: { host: string; port: number };
   onebot: {
     accessToken: string;
     apiTimeoutMs: number;
@@ -217,7 +217,7 @@ export interface AgentTraceMessage {
 export interface AgentRunSummary {
   id: string;
   agent: AgentKind;
-  status: "running" | "completed" | "failed" | "aborted" | "skipped";
+  status: "running" | "completed" | "failed";
   trigger: string;
   startedAt: number;
   endedAt: number | null;

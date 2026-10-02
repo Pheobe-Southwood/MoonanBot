@@ -1,4 +1,7 @@
-import { statSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { MoonanDatabase } from "../src/storage/database.js";
 import { LEGACY_SIMULATION_PROMPT_V0_0_1, SIMULATION_SYSTEM_PROMPT, VISION_SYSTEM_PROMPT } from "../src/agents/prompts.js";
@@ -13,6 +16,27 @@ describe("SQLite source of truth", () => {
       expect((fixture.db.sqlite.prepare("PRAGMA journal_mode").get() as any).journal_mode).toBe("wal");
       expect(statSync(fixture.path).mode & 0o777).toBe(0o600);
     } finally { fixture.cleanup(); }
+  });
+
+  it("carries the synthesis watermark from legacy batch rows and drops unread tables", () => {
+    const directory = mkdtempSync(join(tmpdir(), "moonanbot-legacy-"));
+    const path = join(directory, "legacy.sqlite");
+    const bare = new DatabaseSync(path);
+    bare.exec(`
+      CREATE TABLE synthesis_batches (id TEXT PRIMARY KEY, window_start INTEGER NOT NULL, window_end INTEGER NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, summary TEXT, error TEXT, created_at INTEGER NOT NULL, completed_at INTEGER);
+      INSERT INTO synthesis_batches(id,window_start,window_end,status,created_at) VALUES('old',0,4242,'completed',1);
+      CREATE TABLE document_revisions (id TEXT PRIMARY KEY, kind TEXT NOT NULL, entity_id TEXT NOT NULL, snapshot_json TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL);
+    `);
+    bare.close();
+    const db = new MoonanDatabase(path);
+    try {
+      expect(db.lastSynthesisEnd()).toBe(4242);
+      expect(db.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='synthesis_batches'").get()).toBeUndefined();
+      expect(db.sqlite.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_revisions'").get()).toBeUndefined();
+    } finally {
+      db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("rolls back nested transactions and detects optimistic conflicts", () => {

@@ -3,7 +3,6 @@ import type {
   Importance,
   NotificationDecision,
   RuntimeState,
-  StoredMessage,
   TargetKind,
 } from "./types.js";
 
@@ -62,14 +61,6 @@ export function formatAvailableActions(actions: AvailableAction[]): string {
     return `- ${action.id}${parameters ? `(${parameters})` : ""}：${action.description}`;
   });
   return `接下来可用的动作:\n${lines.join("\n")}`;
-}
-
-export function formatObservedMessages(messages: StoredMessage[]): string {
-  if (!messages.length) return "（没有消息）";
-  return messages.map((message) => {
-    const time = new Date(message.occurredAt).toISOString();
-    return `[${time}] ${message.senderName}(${message.senderId}): ${message.content}`;
-  }).join("\n");
 }
 
 export function validateDuration(action: "idle" | "sleep", minutes: number, settings: AppSettings): void {

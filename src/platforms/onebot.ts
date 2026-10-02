@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import type { AppSettings, ConversationTarget, OneBotRole } from "../domain/types.js";
+import { parseOneBotRole } from "../domain/settings.js";
 import type { MoonanDatabase } from "../storage/database.js";
 import type { ChatPlatformAdapter, PlatformFilePayload, PlatformMessageEvent, PlatformStatus, RosterSyncSummary, SendResult } from "./types.js";
 
 type Role = OneBotRole;
 
-const ROLES: readonly Role[] = ["event", "api", "universal"];
 const OUTBOUND_OPEN_TIMEOUT_MS = 30_000;
 const OUTBOUND_BACKOFF_MAX_MS = 30_000;
 const ROSTER_SYNC_INTERVAL_MS = 6 * 60 * 60_000;
@@ -50,12 +50,6 @@ function outboundFingerprint(entry: { url: string; accessToken: string; selfId: 
   return [entry.url, entry.accessToken, entry.selfId, entry.role, String(entry.reconnectIntervalMs), String(entry.enabled)].join("\u0000");
 }
 
-interface Connection {
-  socket: WebSocket;
-  selfId: string;
-  role: Role;
-}
-
 interface PendingRequest {
   resolve: (value: any) => void;
   reject: (reason: Error) => void;
@@ -69,8 +63,7 @@ export interface OneBotAttach {
 }
 
 function normalizeRole(raw: string | undefined): Role | null {
-  const value = String(raw ?? "").trim().toLowerCase();
-  return (ROLES as readonly string[]).includes(value) ? value as Role : null;
+  return parseOneBotRole(raw);
 }
 
 /** Canonical text form of one message segment; image segments keep the `[图片：file]` placeholder. */
@@ -390,11 +383,11 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
         this.db.upsertContact({
           platform: "onebot", id, name: String(friend.remark || friend.nickname || id), aliases: existing?.aliases ?? [],
           summary: existing?.summary ?? "", importance: existing?.importance ?? "normal", isFriend: true,
-        }, "roster", false);
+        });
       }
       for (const contact of this.db.listContacts()) {
         if (contact.isFriend && !friendIds.has(contact.id)) {
-          this.db.upsertContact({ ...contact, isFriend: false }, "roster", false);
+          this.db.upsertContact({ ...contact, isFriend: false });
           summary.contactsUpdated += 1;
         }
       }
@@ -407,7 +400,7 @@ export class OneBotV11Adapter implements ChatPlatformAdapter {
         groupIds.add(id);
         const existing = this.db.listGroups().find((item) => item.id === id);
         if (!existing) summary.groupsAdded += 1;
-        this.db.upsertGroup({ platform: "onebot", id, name: String(group.group_name || id), summary: existing?.summary ?? "" }, "roster");
+        this.db.upsertGroup({ platform: "onebot", id, name: String(group.group_name || id), summary: existing?.summary ?? "" });
       }
       const local = this.db.listGroups();
       if (groupIds.size > 0) {

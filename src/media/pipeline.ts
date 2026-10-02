@@ -179,13 +179,8 @@ export class MediaPipeline {
 }
 
 export function decodeBase64(value: string): Uint8Array | null {
-  try {
-    const clean = value.replace(/^data:[^;]*;base64,/, "").replace(/\s/g, "");
-    const buffer = Buffer.from(clean, "base64");
-    return buffer.length ? new Uint8Array(buffer) : null;
-  } catch {
-    return null;
-  }
+  const buffer = Buffer.from(value.replace(/^data:[^;]*;base64,/, ""), "base64");
+  return buffer.length ? new Uint8Array(buffer) : null;
 }
 
 /** Magic-byte sniffing for the raster formats QQ actually carries; the payload decides, never the URL. */

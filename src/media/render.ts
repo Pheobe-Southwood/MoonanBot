@@ -11,8 +11,6 @@ export interface RenderedMessages {
   images: ImageContent[];
   /** Interleaved text/image blocks for tool-result content. */
   content: Array<TextContent | ImageContent>;
-  /** Attachable images dropped by the per-request cap; represented by description or placeholder instead. */
-  omitted: number;
 }
 
 export interface RenderOptions {
@@ -72,7 +70,7 @@ export async function renderObservedMessages(
   const settings = db.getSettings().value.media;
   if (!messages.length) {
     const placeholder: TextContent = { type: "text", text: "（没有消息）" };
-    return { text: "（没有消息）", images: [], content: [placeholder], omitted: 0 };
+    return { text: "（没有消息）", images: [], content: [placeholder] };
   }
   await pipeline.waitForFetches(messages.map((message) => message.id), settings.downloadTimeoutMs);
   const mediaByMessage = db.listMediaForMessages(messages.map((message) => message.id));
@@ -140,7 +138,7 @@ export async function renderObservedMessages(
     content.push({ type: "text", text: note });
     lines.push(note);
   }
-  return { text: lines.join("\n"), images, content, omitted };
+  return { text: lines.join("\n"), images, content };
 }
 
 /** Synchronous preview form for list views: cached descriptions only, never a lazy Vision call. */

@@ -4,9 +4,10 @@ import { basename, dirname, join, resolve } from "node:path";
 import { MoonanDatabase } from "./storage/database.js";
 import { WebAuth } from "./http/auth.js";
 import { dataDirectory, main } from "./index.js";
+import { VERSION } from "./version.js";
 
 function usage(): never {
-  process.stderr.write(`MoonanBot v0.0.1-rc.4\n\nUsage:\n  moonanbot serve\n  moonanbot reset-password [new-password]\n  moonanbot backup <destination.sqlite>\n  moonanbot status\n`);
+  process.stderr.write(`MoonanBot v${VERSION}\n\nUsage:\n  moonanbot serve\n  moonanbot reset-password [new-password]\n  moonanbot backup <destination.sqlite>\n  moonanbot status\n`);
   process.exit(2);
 }
 
