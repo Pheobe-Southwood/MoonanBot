@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Agent, type AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ImageContent, Message, Model, ToolResultMessage, UserMessage } from "@earendil-works/pi-ai";
-import { archiveThreshold, estimateContextTokens, formatAvailableActions, listAvailableActions, notificationFor, segmentsMention } from "../domain/behavior.js";
+import { archiveThreshold, estimateContextTokens, formatAvailableActions, listAvailableActions, notificationFor, pruneStaleActionMenus, segmentsMention } from "../domain/behavior.js";
 import type { AgentSelection, ConversationTarget, Importance, NotificationDecision, StoredMessage } from "../domain/types.js";
 import { MediaPipeline } from "../media/pipeline.js";
 import { renderMessagePreview, renderObservedMessages, renderSynthesisEvents, stripImageBlocks, type MediaView, type RenderedMessages } from "../media/render.js";
@@ -298,9 +298,13 @@ export class RuntimeOrchestrator {
       this.simulationAgent = new Agent({
         initialState: {
           systemPrompt: prompt, model: selected.model, thinkingLevel: selected.thinkingLevel,
-          tools, messages: this.db.getAgentState<AgentMessage>("simulation"),
+          tools, messages: pruneStaleActionMenus(this.db.getAgentState<AgentMessage>("simulation")),
         },
         streamFn: this.providers.models.streamSimple.bind(this.providers.models),
+        // Only the newest Action Menu reaches the model (issue #6, ADR-0009); the hook must not throw.
+        transformContext: async (messages) => {
+          try { return pruneStaleActionMenus(messages); } catch { return messages; }
+        },
         toolExecution: "sequential",
         steeringMode: "all",
         followUpMode: "all",
@@ -309,7 +313,10 @@ export class RuntimeOrchestrator {
       this.simulationAgent.subscribe((event) => {
         if (event.type === "tool_execution_end" && event.toolName === "perform_action") this.simulationActionCalls += 1;
         if (event.type === "message_end" && this.simulationRunId) this.traceMessage(this.simulationRunId, event.message, "simulation");
-        if (event.type === "agent_end") this.db.setAgentState("simulation", stripImageBlocks(event.messages));
+        if (event.type === "agent_end") {
+          if (this.simulationAgent) this.simulationAgent.state.messages = pruneStaleActionMenus(this.simulationAgent.state.messages);
+          this.db.setAgentState("simulation", stripImageBlocks(pruneStaleActionMenus(event.messages)));
+        }
       });
     }
     this.simulationAgent.state.systemPrompt = prompt;
@@ -433,7 +440,7 @@ export class RuntimeOrchestrator {
     let recent = existing.slice(-count);
     while (recent[0]?.role === "toolResult") recent = recent.slice(1);
     const handoff = userMessage("更久远的行为已归纳进长期记忆，以当前记忆为准。");
-    const next = [handoff, ...recent];
+    const next = pruneStaleActionMenus([handoff, ...recent]);
     this.db.setAgentState("simulation", stripImageBlocks(next));
     if (this.simulationAgent) this.simulationAgent.state.messages = next;
   }

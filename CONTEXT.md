@@ -28,6 +28,10 @@ _Avoid_: Reply, hidden reasoning
 A validated thing the Character does through `perform_action`, including using the phone, idling, and sleeping.
 _Avoid_: Tool call
 
+**Action Menu**:
+The rendering of the actions currently available to the Character, attached to the newest World Event message or Action result. Only the newest Action Menu survives in the Simulation Agent's context; superseded copies are removed as the model responds.
+_Avoid_: tool list, action appendix
+
 **Terminating Action**:
 An Action — idle, sleep, or wait — that schedules the Character's next wake and ends the current simulation run. A run that ends without one receives a continuation correction.
 _Avoid_: Final message, exit tool

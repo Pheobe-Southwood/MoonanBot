@@ -55,12 +55,85 @@ export function listAvailableActions(runtime: RuntimeState): AvailableAction[] {
   return actions;
 }
 
+/** Header of the Action Menu appendix, shared by the formatter and the pruner so the two never drift apart. */
+export const ACTION_MENU_HEADER = "接下来可用的动作:";
+
 export function formatAvailableActions(actions: AvailableAction[]): string {
   const lines = actions.map((action) => {
     const parameters = Object.entries(action.parameters).map(([key, value]) => `${key}: ${String(value)}`).join(", ");
     return `- ${action.id}${parameters ? `(${parameters})` : ""}：${action.description}`;
   });
-  return `接下来可用的动作:\n${lines.join("\n")}`;
+  return `${ACTION_MENU_HEADER}\n${lines.join("\n")}`;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Suffix form of the Action Menu appendix. Anchored to the end of a text so that
+ * mid-text mentions of the header survive, and open-ended in its item lines so that
+ * menus of every phone state match.
+ */
+const ACTION_MENU_SUFFIX = new RegExp(`(?:\\n\\n)?${escapeRegExp(ACTION_MENU_HEADER)}\\n(?:- [^\\n]*(?:\\n|$))*$`);
+
+function blockText(block: unknown): string | null {
+  const candidate = block as { type?: unknown; text?: unknown } | null | undefined;
+  return candidate?.type === "text" && typeof candidate.text === "string" ? candidate.text : null;
+}
+
+function isMenuText(text: string): boolean {
+  return ACTION_MENU_SUFFIX.test(text);
+}
+
+function stripMenu(text: string): string {
+  return text.replace(ACTION_MENU_SUFFIX, "").trimEnd();
+}
+
+/** True when a user or tool-result message ends with an Action Menu appendix; assistant output never counts. */
+function carriesMenu(message: unknown): boolean {
+  const candidate = message as { role?: unknown; content?: unknown } | null | undefined;
+  if (!candidate || (candidate.role !== "user" && candidate.role !== "toolResult")) return false;
+  const content = candidate.content;
+  if (typeof content === "string") return isMenuText(content);
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => {
+    const text = blockText(block);
+    return text !== null && isMenuText(text);
+  });
+}
+
+/** Returns a copy of the message with every menu suffix removed; a stripped block survives as empty text so content never disappears. */
+function withoutMenu<T>(message: T): T {
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return { ...(message as object), content: stripMenu(content) } as T;
+  const blocks = (content as unknown[]).map((block) => {
+    const text = blockText(block);
+    if (text === null || !isMenuText(text)) return block;
+    return { ...(block as object), text: stripMenu(text) };
+  });
+  return { ...(message as object), content: blocks } as T;
+}
+
+/**
+ * Keeps only the newest Action Menu in a transcript (issue #6): menus on earlier user or
+ * tool-result messages are stripped from their text suffixes while the messages themselves
+ * stay. Assistant output is never touched. Pure and idempotent; returns the input array
+ * unchanged when there is nothing to prune.
+ */
+export function pruneStaleActionMenus<T>(messages: T[]): T[] {
+  let newest = -1;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (carriesMenu(messages[index])) { newest = index; break; }
+  }
+  if (newest < 0) return messages;
+  let changed = false;
+  const pruned = messages.map((message, index) => {
+    if (index >= newest || !carriesMenu(message)) return message;
+    changed = true;
+    return withoutMenu(message);
+  });
+  return changed ? pruned : messages;
 }
 
 export function validateDuration(action: "idle" | "sleep", minutes: number, settings: AppSettings): void {

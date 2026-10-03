@@ -110,6 +110,47 @@ describe("runtime orchestration with pi faux provider", () => {
     expect(db.getRuntime().nextWakeAt).not.toBeNull();
   });
 
+  it("keeps only the newest action menu in wire context and persisted state (#6)", async () => {
+    const { db, faux, providers } = configured();
+    const contexts: any[] = [];
+    const acted = (action: Record<string, unknown>) => (context: any) => {
+      contexts.push(context);
+      return fauxAssistantMessage([fauxToolCall("perform_action", action)], { stopReason: "toolUse" });
+    };
+    faux.setResponses([
+      acted({ action: "open_phone" }),
+      acted({ action: "view_contacts" }),
+      acted({ action: "idle", durationMinutes: 30 }),
+      acted({ action: "sleep", durationMinutes: 30 }),
+      fauxAssistantMessage([fauxToolCall("finish_synthesis", { summary: "记录本轮。" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("归纳完成。"),
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    const menuCount = (messages: unknown[]) => JSON.stringify(messages).split("接下来可用的动作:").length - 1;
+
+    await orchestrator.startBot();
+    // Run 1: wake → open_phone → view_contacts → idle; every request sees exactly one menu.
+    expect(contexts).toHaveLength(3);
+    for (const context of contexts) expect(menuCount(context.messages)).toBe(1);
+    // The surviving copy rides the newest tool result; the wake message and older results lost their appendix.
+    expect(contentText(contexts[2].messages[0].content)).not.toContain("接下来可用的动作:");
+    expect(contentText(contexts[2].messages[2].content)).not.toContain("接下来可用的动作:");
+    expect(contentText(contexts[2].messages.at(-1).content)).toContain("接下来可用的动作:");
+    expect(menuCount(db.getAgentState("simulation"))).toBe(1);
+
+    // Run 2: a fresh activation supersedes the menu retained at the end of run 1.
+    await orchestrator.activate("有人找你，请决定下一步行动。");
+    expect(contexts).toHaveLength(4);
+    expect(menuCount(contexts[3].messages)).toBe(1);
+    expect(contentText(lastUserContent(contexts[3]))).toContain("接下来可用的动作:");
+    expect(menuCount(db.getAgentState("simulation"))).toBe(1);
+
+    // After the sleep-triggered synthesis compacts the transcript, still at most one menu survives.
+    await eventually(() => expect(db.listAgentRuns(10, "synthesis").some((run) => run.status === "completed")).toBe(true));
+    expect(menuCount(db.getAgentState("simulation"))).toBeLessThanOrEqual(1);
+  });
+
   it("wakes from a seconds wait through the durable timer loop", async () => {
     const { db, faux, providers } = configured();
     const settings = db.getSettings();

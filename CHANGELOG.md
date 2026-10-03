@@ -4,6 +4,7 @@
 
 - Fixed `wait_messages` missing messages that arrive during model-provider latency (#5): the wait window anchored to `Date.now()` at tool execution, so incoming messages between the last chat read/send and the wait action were excluded from `messageCount`, absent from the wait summary, and could even produce a "phone vibrated … no new messages" wake. The window now anchors to the Character's last up-to-date view of the watched chat — the oldest unread incoming message, else now — and a count-mode wait whose target is already satisfied expires immediately instead of idling until the timeout.
 - Delivered wait summaries now mark exactly the messages they rendered as read, so consecutive waits never re-count or re-show them and the contact list no longer reports a chat the Character just read through a wait summary as unread. A wait timer that expires while paused still leaves its messages unread, so they resurface after the operator resumes.
+- Fixed stale action menus accumulating in the simulation context (#6): world-event messages and `perform_action` results still append the current “接下来可用的动作” menu (ADR-0007), but superseded menus are now stripped before every LLM call and from the transcript persisted at run end, so only the newest copy is ever sent to the model or counted toward the archive threshold (ADR-0009).
 
 ## 0.0.1-rc.8 — 2026-09-29
 
