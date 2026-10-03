@@ -13,6 +13,9 @@ export async function main(): Promise<void> {
   });
   const settings = app.db.getSettings().value;
   await app.server.listen({ host: process.env.MOONANBOT_HOST ?? settings.web.host, port: Number(process.env.MOONANBOT_PORT ?? settings.web.port) });
+  // Best-effort boot sync: re-pull every custom provider's model list in the background.
+  // The persisted last-known-good list stays authoritative while this runs or if it fails.
+  void app.providers.refreshCustomProviders().catch(() => undefined);
   if (app.bootstrapPassword) {
     app.server.log.warn("A new WebUI password was generated. Store it now; it remains valid until reset.");
     process.stdout.write(`MOONANBOT_INITIAL_PASSWORD=${app.bootstrapPassword}\n`);

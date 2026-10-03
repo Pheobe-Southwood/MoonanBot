@@ -53,6 +53,10 @@ export interface CustomProviderRecord {
     maxTokens: number;
     reasoning: boolean;
   }>;
+  /** When the remote model list was last fetched, successfully or not; null when never refreshed. */
+  lastRefreshAt: number | null;
+  /** Why the last refresh kept the stored list (empty or failed remote); null after a clean sync. */
+  lastRefreshError: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -244,6 +248,8 @@ export class MoonanDatabase {
         base_url TEXT NOT NULL,
         api_key TEXT,
         models_json TEXT NOT NULL,
+        last_refresh_at INTEGER,
+        last_refresh_error TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
@@ -266,8 +272,16 @@ export class MoonanDatabase {
         expires_at INTEGER NOT NULL
       );
     `);
+    this.ensureCustomProviderColumns();
     this.carryLegacyState();
     this.seed();
+  }
+
+  /** Lightweight column migration: databases written before refresh-state tracking gain the nullable columns. */
+  private ensureCustomProviderColumns(): void {
+    const columns = (this.sqlite.prepare("PRAGMA table_info(custom_providers)").all() as any[]).map((row) => String(row.name));
+    if (!columns.includes("last_refresh_at")) this.sqlite.exec("ALTER TABLE custom_providers ADD COLUMN last_refresh_at INTEGER");
+    if (!columns.includes("last_refresh_error")) this.sqlite.exec("ALTER TABLE custom_providers ADD COLUMN last_refresh_error TEXT");
   }
 
   /** One-time upgrades for databases written by older releases: keep the synthesis watermark, drop tables no code reads. */
@@ -685,11 +699,13 @@ export class MoonanDatabase {
   listCustomProviders(): CustomProviderRecord[] {
     return (this.sqlite.prepare("SELECT * FROM custom_providers ORDER BY name").all() as any[]).map((row) => ({
       id: row.id, name: row.name, baseUrl: row.base_url, apiKey: row.api_key, models: json(row.models_json),
+      lastRefreshAt: row.last_refresh_at === null ? null : Number(row.last_refresh_at),
+      lastRefreshError: row.last_refresh_error,
       createdAt: Number(row.created_at), updatedAt: Number(row.updated_at),
     }));
   }
 
-  upsertCustomProvider(input: Omit<CustomProviderRecord, "createdAt" | "updatedAt">): CustomProviderRecord {
+  upsertCustomProvider(input: Omit<CustomProviderRecord, "createdAt" | "updatedAt" | "lastRefreshAt" | "lastRefreshError">): CustomProviderRecord {
     if (!/^[a-z0-9][a-z0-9_-]{1,63}$/i.test(input.id)) throw new Error("invalid_provider_id");
     const timestamp = now();
     const existing = this.listCustomProviders().find((item) => item.id === input.id);
@@ -697,6 +713,23 @@ export class MoonanDatabase {
       ON CONFLICT(id) DO UPDATE SET name=excluded.name,base_url=excluded.base_url,api_key=excluded.api_key,models_json=excluded.models_json,updated_at=excluded.updated_at`)
       .run(input.id, input.name, input.baseUrl.replace(/\/$/, ""), input.apiKey, JSON.stringify(input.models), existing?.createdAt ?? timestamp, timestamp);
     return this.listCustomProviders().find((item) => item.id === input.id)!;
+  }
+
+  /**
+   * Records one refresh outcome without touching operator-edit fields: a non-empty `models`
+   * replaces the last-known-good list; an empty or absent one never clears it. The sync state always updates.
+   */
+  setCustomProviderRefreshState(id: string, state: { models?: CustomProviderRecord["models"]; lastRefreshAt: number; lastRefreshError: string | null }): CustomProviderRecord {
+    if (state.models?.length) {
+      this.sqlite.prepare("UPDATE custom_providers SET models_json=?,last_refresh_at=?,last_refresh_error=? WHERE id=?")
+        .run(JSON.stringify(state.models), state.lastRefreshAt, state.lastRefreshError, id);
+    } else {
+      this.sqlite.prepare("UPDATE custom_providers SET last_refresh_at=?,last_refresh_error=? WHERE id=?")
+        .run(state.lastRefreshAt, state.lastRefreshError, id);
+    }
+    const record = this.listCustomProviders().find((item) => item.id === id);
+    if (!record) throw new Error("custom_provider_not_found");
+    return record;
   }
 
   deleteCustomProvider(id: string): void {
