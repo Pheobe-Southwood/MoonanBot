@@ -92,8 +92,9 @@ export class RuntimeOrchestrator {
     if (!readiness.ready) throw new Error(readiness.problems.join("；"));
     this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", health: "healthy", nextWakeAt: null, lastError: null });
-    this.db.addEvent("character_started", "你醒来了", {});
-    await this.activate("你醒来了");
+    const name = this.db.getProfile().name;
+    this.db.addEvent("character_started", `${name}醒来了`, {});
+    await this.activate(`${name}醒来了`);
   }
 
   pauseBot(): void {
@@ -105,9 +106,11 @@ export class RuntimeOrchestrator {
     const [wait] = this.db.listPendingTimers("wait");
     this.db.cancelPendingTimers("wait");
     this.db.setRuntime({ mode: "awake", nextWakeAt: null });
+    const name = this.db.getProfile().name;
+    const head = `${name}被唤醒了，请决定下一步行动。`;
     const merged = wait
-      ? await this.waitMergeText(wait, "你被唤醒了，请决定下一步行动。")
-      : { text: "你被唤醒了，请决定下一步行动。", images: [] as ImageContent[], messageIds: [] as string[] };
+      ? await this.waitMergeText(wait, head)
+      : { text: head, images: [] as ImageContent[], messageIds: [] as string[] };
     this.db.markMessagesRead(merged.messageIds);
     this.db.addEvent("operator_wake", merged.text, {});
     await this.activate(merged.text, false, merged.images);
