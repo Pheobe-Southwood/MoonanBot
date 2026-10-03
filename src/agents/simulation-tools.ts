@@ -103,6 +103,10 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
           if (runtime.phone.kind === "chat" && params.contactId !== runtime.phone.target.id) {
             throw new Error("在当前聊天窗口只能设置该好友的消息重要度");
           }
+          const existing = db.getContact(params.contactId);
+          if (!existing || !existing.isFriend) {
+            throw new Error(`未知联系人：${params.contactId}`);
+          }
           let contact;
           try {
             contact = db.setContactImportance(params.contactId, params.importance as Importance);
@@ -136,6 +140,7 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
           interface Entry { kind: "private" | "group"; id: string; name: string; unread: number; latest: StoredMessage | null }
           const entries: Entry[] = [];
           for (const contact of db.listContacts()) {
+            if (!contact.isFriend) continue;
             const target: ConversationTarget = { platform: "onebot", kind: "private", id: contact.id, name: contact.name };
             entries.push({ kind: "private", id: contact.id, name: contact.name, unread: unreadByKey.get(`private:${contact.id}`) ?? 0, latest: db.listMessages(target, 1).at(-1) ?? null });
           }
@@ -177,7 +182,7 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
           const known = params.kind === "private"
             ? db.getContact(params.targetId)
             : db.listGroups().find((item) => item.id === params.targetId);
-          if (!known) throw new Error(`未知联系人或群聊：${params.targetId}`);
+          if (!known || ("isFriend" in known && !known.isFriend)) throw new Error(`未知联系人或群聊：${params.targetId}`);
           const target: ConversationTarget = { platform: "onebot", kind: params.kind, id: params.targetId, name: known.name };
           const isTarget = (item: { target: ConversationTarget }): boolean => item.target.kind === target.kind && item.target.id === target.id;
           const unreadCount = db.unreadSummary(true).find(isTarget)?.count ?? 0;

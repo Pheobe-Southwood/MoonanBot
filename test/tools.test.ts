@@ -275,6 +275,29 @@ describe("simulation tools", () => {
       await expect(execute(perform!, { action: "set_contact_importance", contactId: "7", importance: "normal" })).rejects.toThrow(/当前状态/);
     } finally { fixture.cleanup(); }
   });
+
+  it("only lists friends and groups in view_contacts, ignoring non-friend contacts", async () => {
+    const fixture = testDatabase();
+    try {
+      fixture.db.upsertContact(seven);
+      fixture.db.upsertContact({ platform: "onebot", id: "stranger-1", name: "Stranger Member", aliases: [], summary: "", importance: "normal", isFriend: false });
+      fixture.db.upsertGroup({ platform: "onebot", id: "g1", name: "Test Group", summary: "" });
+      const [perform] = buildSimulationTools(fixture.db, platform(), stubMediaView(fixture.db));
+
+      await execute(perform!, { action: "open_phone" });
+      const text = textOf(await execute(perform!, { action: "view_contacts" }));
+      expect(text).toContain("Seven（7）");
+      expect(text).toContain("Test Group（g1）");
+      expect(text).not.toContain("Stranger Member");
+      expect(text).not.toContain("stranger-1");
+
+      await expect(execute(perform!, { action: "open_chat", kind: "private", targetId: "stranger-1" })).rejects.toThrow(/未知联系人或群聊：stranger-1/);
+      await expect(execute(perform!, { action: "set_contact_importance", contactId: "stranger-1", importance: "priority" })).rejects.toThrow(/未知联系人：stranger-1/);
+
+      const openedFriend = textOf(await execute(perform!, { action: "open_chat", kind: "private", targetId: "7" }));
+      expect(openedFriend).toContain("Seven");
+    } finally { fixture.cleanup(); }
+  });
 });
 
 describe("synthesis tools", () => {
