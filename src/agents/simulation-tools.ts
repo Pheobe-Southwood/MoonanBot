@@ -277,8 +277,13 @@ export function buildSimulationTools(db: MoonanDatabase, platform: ChatPlatformA
           const phone = runtime.phone;
           const plan = validateWait(params, settings);
           db.cancelPendingTimers();
-          const since = Date.now();
-          const dueAt = plan.mode === "seconds" ? since + plan.seconds * 1_000 : since + settings.simulation.waitMessageTimeoutSeconds * 1_000;
+          const start = Date.now();
+          // The window anchors to the Character's last up-to-date view of this chat — the oldest
+          // unread incoming message — so anything that arrived during model latency still counts (#5).
+          const since = db.oldestUnreadOccurredAt(phone.target) ?? start;
+          let dueAt = plan.mode === "seconds" ? start + plan.seconds * 1_000 : start + settings.simulation.waitMessageTimeoutSeconds * 1_000;
+          // The awaited messages are already on screen: expire at once and let the timer loop wake the run.
+          if (plan.mode === "count" && db.listMessagesSince(phone.target, since).length >= plan.count) dueAt = start;
           db.createTimer("wait", dueAt, {
             watch: phone.target, mode: plan.mode, since,
             ...(plan.mode === "seconds" ? { seconds: plan.seconds } : { count: plan.count }),

@@ -456,6 +456,20 @@ export class MoonanDatabase {
       .run(now(), target.platform, target.kind, target.id);
   }
 
+  /** Mark exactly the given messages read without overwriting an existing watermark; used when a rendered summary is delivered. */
+  markMessagesRead(ids: string[]): void {
+    if (!ids.length) return;
+    const placeholders = ids.map(() => "?").join(",");
+    this.sqlite.prepare(`UPDATE messages SET read_at=? WHERE id IN (${placeholders}) AND read_at IS NULL`).run(now(), ...ids);
+  }
+
+  /** Platform timestamp of the oldest unread incoming message for a target: the anchor of what the Character has not seen yet. */
+  oldestUnreadOccurredAt(target: ConversationTarget): number | null {
+    const row = this.sqlite.prepare(`SELECT MIN(occurred_at) AS value FROM messages WHERE platform=? AND target_kind=? AND target_id=? AND direction='incoming' AND read_at IS NULL`)
+      .get(target.platform, target.kind, target.id) as any;
+    return row?.value === null || row?.value === undefined ? null : Number(row.value);
+  }
+
   unreadSummary(includeNoPush = false): Array<{ target: ConversationTarget; count: number }> {
     const rows = this.sqlite.prepare(`SELECT m.platform,m.target_kind,m.target_id,MAX(m.target_name) AS target_name,COUNT(*) AS count
       FROM messages m LEFT JOIN contacts c ON m.target_kind='private' AND c.platform=m.platform AND c.id=m.target_id

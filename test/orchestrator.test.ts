@@ -159,6 +159,45 @@ describe("runtime orchestration with pi faux provider", () => {
     expect(waitEvents[0]?.text).toContain("quiet two");
   });
 
+  it("counts a reply that arrived during model latency and wakes immediately", async () => {
+    const { db, faux, providers } = configured();
+    db.upsertContact({ platform: "onebot", id: "7", name: "Seven", aliases: [], summary: "", importance: "do_not_disturb", isFriend: true });
+    const gapAt = Date.now() - 5_000;
+    faux.setResponses([
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "open_phone" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "view_contacts" })], { stopReason: "toolUse" }),
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "open_chat", kind: "private", targetId: "7" })], { stopReason: "toolUse" }),
+      () => {
+        // The reply lands while the provider is "thinking" between open_chat and wait_messages.
+        db.insertMessage({
+          id: "gap-1", platformMessageId: "gap-1", target: sevenTarget, senderId: "7", senderName: "Seven",
+          direction: "incoming", content: "延迟期间的回复", segments: [], occurredAt: gapAt, observedAt: gapAt,
+          deliveryStatus: "received", readAt: null,
+        });
+        return fauxAssistantMessage([fauxToolCall("perform_action", { action: "wait_messages", messageCount: 1 })], { stopReason: "toolUse" });
+      },
+      fauxAssistantMessage([fauxToolCall("perform_action", { action: "wait_messages", messageCount: 1 })], { stopReason: "toolUse" }),
+    ]);
+    const orchestrator = new RuntimeOrchestrator(db, providers, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    await orchestrator.startBot();
+    expect(db.getRuntime().mode).toBe("waiting");
+    orchestrator.start();
+    // The already-satisfied wait fires on the first tick; the delivered summary marks the reply read,
+    // so the second wait anchors to "now" instead of counting the reply again.
+    await eventually(() => {
+      const timers = db.listPendingTimers("wait");
+      expect(timers).toHaveLength(1);
+      expect(Number(timers[0]!.payload.since)).toBeGreaterThan(gapAt);
+      expect(timers[0]!.dueAt - Date.now()).toBeGreaterThan(170_000);
+    }, 10_000);
+    const waitEvents = db.eventsSince(0).filter((event) => event.type === "wait_elapsed");
+    expect(waitEvents[0]?.text).toContain("等待的 1 条新消息已到达");
+    expect(waitEvents[0]?.text).toContain("延迟期间的回复");
+    expect(db.getMessage("gap-1")?.readAt).toBeTypeOf("number");
+    expect(db.unreadSummary(true).some((item) => item.target.id === "7")).toBe(false);
+  });
+
   it("retries failed synthesis batches and compacts old context only after commit", async () => {
     const { db, faux, providers } = configured();
     const settings = db.getSettings();
@@ -220,6 +259,7 @@ describe("runtime orchestration with pi faux provider", () => {
     expect(alarm?.text).toContain("盯着屏幕时来的消息");
     expect(db.listPendingTimers("wait")).toHaveLength(0);
     expect(db.getRuntime().mode).toBe("awake");
+    expect(db.getMessage("watched-1")?.readAt).toBeTypeOf("number");
   });
 
   it("drops platform echoes of the character's own messages", async () => {
@@ -282,6 +322,25 @@ describe("runtime orchestration with pi faux provider", () => {
     const wake = db.eventsSince(0).find((event) => event.type === "operator_wake");
     expect(wake?.text).toContain("你被唤醒了");
     expect(wake?.text).toContain("等待期间来的消息");
+  });
+
+  it("records an expired wait while paused without delivering or marking read", async () => {
+    const fixture = testDatabase();
+    cleanups.push(fixture.cleanup);
+    const db = fixture.db;
+    db.setRuntime({ mode: "paused", phone: { kind: "chat", target: sevenTarget } });
+    db.insertMessage({
+      id: "paused-1", platformMessageId: "p-1", target: sevenTarget, senderId: "7", senderName: "Seven",
+      direction: "incoming", content: "暂停期间的消息", segments: [], occurredAt: Date.now() - 1_000, observedAt: Date.now() - 1_000,
+      deliveryStatus: "received", readAt: null,
+    });
+    db.createTimer("wait", Date.now() - 1, { watch: sevenTarget, mode: "seconds", seconds: 30, since: Date.now() - 2_000 });
+    const orchestrator = new RuntimeOrchestrator(db, { models: createModels() } as unknown as ProviderRegistry, fakePlatform());
+    cleanups.push(() => { void orchestrator.close(); });
+    orchestrator.start();
+    await eventually(() => expect(db.eventsSince(0).some((event) => event.type === "wait_elapsed")).toBe(true));
+    expect(db.getRuntime().mode).toBe("paused");
+    expect(db.getMessage("paused-1")?.readAt).toBeNull();
   });
 });
 
