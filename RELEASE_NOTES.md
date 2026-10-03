@@ -1,31 +1,27 @@
-# MoonanBot v0.0.1-rc.8
+# MoonanBot v0.0.1-rc.9
 
-This release candidate fixes two silent capability bugs that made custom-provider models — the ones behind a self-hosted OpenAI-compatible proxy — unable to use the very features the operator turned on: forced image input never reached the wire, and a selected thinking level was dropped before it could be sent. It also adds the `max` reasoning level.
+This release candidate fixes custom-provider model list zeroing and stalling, stops stale action menus from inflating the simulation context, anchors message waits to the unread watermark so model latency cannot drop messages, and standardizes wake messages to character profile names.
 
-**Forced image input now actually sends images.** In RC.7 the per-slot `forceImageInput` toggle only relaxed MoonanBot's own capability gate; the pi-ai serialization layer still checked the model record's `input` modalities and, finding no `"image"`, replaced every image with the literal text `(image omitted: model does not support images)`. Custom-provider models are always fabricated as `input:["text"]`, so a forced slot's character was told, in plain text, that the image had been omitted — exactly the "白蒙蒙的雾" symptom. Slot selection now patches the pi-ai Model record before serialization, so a forced slot sends real `image_url` data URIs.
+**Custom-provider model lists are now persisted and resilient (#7, ADR-0010).** Custom-provider models previously existed only in process memory: restarts, editing any provider, or upstream glitches returning empty lists reset selectable models to zero, stalling the character with consumed timers. Models are now persisted in SQLite as a durable Known Model List. `ProviderRegistry` fetches remote models directly (with or without an API key, so keyless local endpoints like LM Studio or vLLM work seamlessly), writes back successful non-empty lists, triggers a background re-sync at boot, and preserves stored models on empty or failed responses while recording the failure. The WebUI also adds an in-place editor for custom endpoints with sync timestamps and error indicators.
 
-**Custom-provider thinking levels now reach the provider.** Remote-fetched custom models are fabricated with `reasoning:false`, which made pi-ai clamp any selected level down to `off` and send no `reasoning_effort` at all. Even with reasoning enabled, `xhigh` and `max` were downgraded to `high` unless the model carried an explicit `thinkingLevelMap`. For custom providers, a non-`off` slot level now forces `reasoning:true` and maps `xhigh`/`max` to their verbatim wire values, so the level you pick is the level sent.
+**Superseded action menus are pruned from simulation context (#6, ADR-0009).** The "接下来可用的动作" action menu attached to world events and action results previously accumulated in the transcript until synthesis compaction, costing 150–250 tokens per action. The Simulation Agent now strips superseded menus before every LLM call and prunes them from the persisted state at run end, ensuring only the newest action menu reaches the model.
 
-**New `max` thinking level.** pi-ai and pi-agent-core already model a `max` level above `xhigh`; MoonanBot now exposes it in the domain type, settings validation, and the WebUI thinking-level selector for every slot.
+**Message waiting anchors to the unread watermark (#5).** `wait_messages` previously anchored its time window to `Date.now()` at tool execution, missing replies that arrived during model generation latency. The wait window now anchors to the oldest unread incoming message, count-mode waits already satisfied wake immediately, and delivered wait summaries mark rendered messages as read.
 
-Catalog (built-in) models are untouched: pi-ai's authoritative metadata still governs them, reasoning is never force-enabled on a catalog model (which would 400 on providers that genuinely lack it), and `forceImageInput` remains the only image override. The WebUI now shows a hint on custom endpoints that the selected thinking level is sent verbatim as `reasoning_effort` — choose `off` to send nothing.
+**Wake messages address the character by profile name (#8).** Start and wake events now use `${name}醒来了` and `${name}被唤醒了` instead of "你", matching system prompts and the Simulation Agent's director persona.
 
-**Behaviour change to note.** Because the default slot thinking level is `medium`, custom-provider slots that previously sent no `reasoning_effort` (it was silently dropped) will now send `reasoning_effort:"medium"` after this upgrade. If your proxy rejects that parameter, set the slot's thinking level to `off`. Likewise, whether a proxy forwards `image_url` data URIs and `reasoning_effort` to the upstream model is a server-side concern: after this fix MoonanBot sends them correctly, and a proxy that refuses will now surface a visible error instead of a silent omission.
-
-Upgrading from RC.7 keeps the database, WebUI password, character, providers, and account configuration; the installer writes a pre-upgrade backup of the SQLite database. There is no schema change and no settings migration — `max` simply becomes an accepted level.
+**Upgrade notes.** Upgrading from RC.8 preserves the database, WebUI password, character, providers, and account configuration. The installer automatically creates a pre-upgrade backup of the SQLite database. The schema update is non-destructive (two nullable columns `last_refresh_at` and `last_refresh_error` added to `custom_providers` via lightweight migration).
 
 ---
 
-这是 MoonanBot v0.0.1 的第八个候选版本，修复了两个让自定义供应商模型（自建 OpenAI 兼容代理后面的模型）无法使用运营者已开启功能的静默能力 Bug：强制图片输入从未真正发出，选定的思考等级在发送前就被丢弃；同时新增了 `max` 推理等级。
+这是 MoonanBot v0.0.1 的第九个候选版本，修复了自定义提供商模型列表归零停滞问题，移除了推演上下文中堆积的过期动作菜单以降低 Token 消耗，“等待消息”锚定未读水位以防止模型延迟期间漏消息，并将唤醒消息统一为角色名称。
 
-**强制图片输入现在真的会发送图片。** 在 RC.7 中，按槽位的 `forceImageInput` 开关只放开了 MoonanBot 自己的能力门；pi-ai 序列化层仍会检查模型记录的 `input` 模态，发现没有 `"image"` 后，把每张图片替换成字面文本 `(image omitted: model does not support images)`。自定义供应商模型总是被构造为 `input:["text"]`，所以被强制的槽位里，角色会用纯文本被告知"图片已被省略"——正是那层"白蒙蒙的雾"。现在槽位选择会在序列化前修补 pi-ai 的 Model 记录，被强制的槽位会发送真正的 `image_url` data URI。
+**持久化自定义提供商模型列表，修复归零停滞（#7，ADR-0010）。** 此前自定义端点的模型列表仅保存在内存中：进程重启、编辑提供商或上游偶发返回空列表都会导致可选模型归零，使角色陷入激活失败和定时器耗尽的死锁。现在模型列表作为“已知模型列表”（Known Model List）持久化存储在 SQLite 中。注册表自行拉取 `/models`（无论有无 API Key 均可刷新，无缝支持 LM Studio、vLLM 等本地无 Key 端点），成功获取非空列表时写回数据库，并在服务启动时后台异步重新拉取；空响应或请求失败绝不清空已存模型，同时将错误原因与同步时间记录在卡片上。Web 端新增了自定义端点就地编辑入口。
 
-**自定义供应商的思考等级现在能送达供应商。** 远程拉取的自定义模型被构造为 `reasoning:false`，这让 pi-ai 把任何选定等级钳到 `off`，完全不发送 `reasoning_effort`。即使启用了推理，`xhigh` 和 `max` 在缺少显式 `thinkingLevelMap` 时也会被降到 `high`。对于自定义供应商，非 `off` 的槽位等级现在会强制 `reasoning:true`，并把 `xhigh`/`max` 映射为其原样的 wire 值，于是你选的等级就是发出的等级。
+**上下文中仅保留最新一份动作菜单（#6，ADR-0009）。** 世界事件与动作结果末尾附带的“接下来可用的动作”菜单此前会持续累积在推演上下文中直至归纳压缩，每步消耗约 150–250 Token。现在每次调用 LLM 前均会自动剔除历史消息中的过期菜单，并在运行结束落库时同步裁剪，确保发给模型和估算归档阈值的上下文中仅有一份最新菜单。
 
-**新增 `max` 思考等级。** pi-ai 与 pi-agent-core 本就在 `xhigh` 之上建模了 `max` 等级；MoonanBot 现在在每个槽位的域类型、设置校验与 WebUI 思考等级选择器中暴露它。
+**“等待消息”锚定未读水位（#5）。** 此前 `wait_messages` 的等待窗口始于工具执行时的 `Date.now()`，容易漏掉上一步与模型思考延迟期间到达的消息。现在等待窗口锚定到角色未读的最早消息时间戳，已满足数量的等待会立刻唤醒，投递的等待摘要也会准确将对应消息标记为已读。
 
-目录（内置）模型不受影响：仍以 pi-ai 的权威元数据为准，绝不在目录模型上强制启用推理（那会让真正不支持的供应商返回 400），`forceImageInput` 仍是唯一的图片覆盖手段。WebUI 现在会在自定义端点上提示：所选思考等级会原样以 `reasoning_effort` 发送——选 `off` 则不发送。
+**唤醒消息改用角色名称（#8）。** 启动与唤醒消息从“你醒来了”/“你被唤醒了”改为 `${name}醒来了` 与 `${name}被唤醒了`，与系统提示词和推演 Agent 的导演角色定位保持一致。
 
-**需注意的行为变化。** 由于槽位默认思考等级是 `medium`，此前不发送 `reasoning_effort`（被静默丢弃）的自定义供应商槽位，升级后会开始发送 `reasoning_effort:"medium"`。如果你的代理拒绝该参数，请把该槽位的思考等级设为 `off`。同样，代理是否会把 `image_url` data URI 与 `reasoning_effort` 转发给上游模型属于服务器侧行为：修复后 MoonanBot 会正确发送它们，拒绝的代理现在会显式报错，而不再静默省略。
-
-从 RC.7 升级会保留数据库、WebUI 密码、角色、模型配置与账号配置；安装器会在升级前生成 SQLite 备份。没有表结构变更，也无需迁移设置——`max` 只是成为一个被接受的等级。
+**升级须知。** 从 RC.8 升级会完整保留数据库、WebUI 密码、角色设定、模型及账号配置；安装脚本会在升级前自动执行 SQLite 备份。表结构更新为无损增量（通过轻量迁移向 `custom_providers` 表添加可空的 `last_refresh_at` 与 `last_refresh_error` 列）。

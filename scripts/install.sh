@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-RELEASE_VERSION="v0.0.1-rc.4"
+RELEASE_VERSION="v0.0.1-rc.9"
 ASSET=""
 UNINSTALL=0
 PURGE=0

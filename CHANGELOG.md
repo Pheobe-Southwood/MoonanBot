@@ -1,10 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.0.1-rc.9 — 2026-10-03
 
+- Fixed custom-provider model lists zeroing out after restarts, edits, or upstream glitches (#7, ADR-0010): custom endpoints now persist their Known Model List in SQLite (`custom_providers.models_json`); `ProviderRegistry` pulls `/models` directly (with or without an API key), stores non-empty results, and never wipes existing models on empty or failed responses. Added sync status and error reporting to provider cards, boot-time background re-sync, and WebUI editing support.
+- Fixed stale action menus accumulating in the simulation context (#6, ADR-0009): world-event messages and `perform_action` results still append the current “接下来可用的动作” menu (ADR-0007), but superseded menus are now stripped before every LLM call and from the transcript persisted at run end, so only the newest copy is ever sent to the model or counted toward the archive threshold.
 - Fixed `wait_messages` missing messages that arrive during model-provider latency (#5): the wait window anchored to `Date.now()` at tool execution, so incoming messages between the last chat read/send and the wait action were excluded from `messageCount`, absent from the wait summary, and could even produce a "phone vibrated … no new messages" wake. The window now anchors to the Character's last up-to-date view of the watched chat — the oldest unread incoming message, else now — and a count-mode wait whose target is already satisfied expires immediately instead of idling until the timeout.
 - Delivered wait summaries now mark exactly the messages they rendered as read, so consecutive waits never re-count or re-show them and the contact list no longer reports a chat the Character just read through a wait summary as unread. A wait timer that expires while paused still leaves its messages unread, so they resurface after the operator resumes.
-- Fixed stale action menus accumulating in the simulation context (#6): world-event messages and `perform_action` results still append the current “接下来可用的动作” menu (ADR-0007), but superseded menus are now stripped before every LLM call and from the transcript persisted at run end, so only the newest copy is ever sent to the model or counted toward the archive threshold (ADR-0009).
+- Changed character start and wake messages to address the character by profile name (`${name}醒来了` / `${name}被唤醒了`) instead of "你", consistent with system prompts and the Simulation Agent's director perspective (#8).
 
 ## 0.0.1-rc.8 — 2026-09-29
 
