@@ -23,7 +23,7 @@ jobs:
       - run: pnpm check
       - name: Assemble production tree
         run: |
-          pnpm deploy --filter moonanbot --prod release/stage
+          pnpm deploy --legacy --filter moonanbot --prod release/stage
           tar -C release/stage -czf "release/MoonanBot-linux-x64-${GITHUB_REF_NAME}.tar.gz" .
           cd release
           sha256sum "MoonanBot-linux-x64-${GITHUB_REF_NAME}.tar.gz" > SHA256SUMS
